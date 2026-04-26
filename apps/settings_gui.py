@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import sys
 import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from mediapipe_sword_sign import GESTURE_SWORD_SIGN, GESTURE_VICTORY, SwordSignDetector
 from mediapipe_sword_sign.temporal import GestureHoldTracker
