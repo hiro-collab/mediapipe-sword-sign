@@ -54,6 +54,60 @@ print(state.to_json())
 4. 単体テスト
    `uv run python -m unittest discover -s tests`
 
+5. 設定GUI
+   `uv run python apps/settings_gui.py`
+
+## Settings GUI
+
+設定GUIは、モデルや判定しきい値を調整しながら現在フレーム判定と継続判定を確認するためのデバッグツールです。
+
+起動すると、まず `MediaPipe Sword Sign Settings` という設定ウィンドウが表示されます。
+`Start` を押すとカメラが開き、`Gesture Settings Preview` というOpenCVのプレビューウィンドウも表示されます。
+
+```bash
+uv run python apps/settings_gui.py
+```
+
+主な操作項目です。
+
+- `Model`: 使用する `gesture_model.pkl` を指定します。通常は初期値のままで動きます。
+- `Camera`: 使用するカメラ番号です。内蔵カメラは多くの場合 `0` です。
+- `Threshold`: 1フレームごとの推論結果を active とみなす信頼度しきい値です。
+- `Hold`: current frame の active 判定が何秒続いたら stable active とみなすかを指定します。
+- `Grace`: 一瞬だけ手が外れた場合に、stable active を維持する猶予時間です。
+- `Target`: 継続判定の対象gestureです。通常は `sword_sign` を選びます。
+- `Mirror`: プレビューと判定入力を左右反転します。
+- `Landmarks`: プレビューにMediaPipeの手ランドマークを表示します。
+- `Preview`: OpenCVプレビューウィンドウの表示/非表示を切り替えます。
+
+状態表示の見方です。
+
+- `Current`: `SwordSignDetector` による現在フレームの判定です。
+- `Confidence`: 現在フレームで最も高かった推論信頼度です。
+- `Hold State`: `Hold` と `Grace` を加味した継続判定の状態です。
+- `Held For`: 対象gestureが継続している時間です。
+- `Event`: stable active への切り替わり、または release を表示します。
+
+停止するには設定ウィンドウの `Stop` を押します。プレビューウィンドウが有効な場合は、プレビュー側で `Esc` を押しても停止できます。
+
+## Temporal Gesture State
+
+`SwordSignDetector` は現在フレームの判定だけを担当します。
+「一定時間継続したら有効」といった時間判定は `GestureHoldTracker` で後段処理します。
+
+```python
+from mediapipe_sword_sign import GestureHoldTracker, SwordSignDetector
+
+detector = SwordSignDetector()
+hold = GestureHoldTracker(target="sword_sign", hold_seconds=0.5, release_grace_seconds=0.1)
+
+state = detector.detect(frame_bgr)
+stable = hold.update(state)
+
+print(state.sword_sign.active)  # current frame
+print(stable.active)            # duration-based state
+```
+
 ## Adapters
 
 UDPで `GestureState` JSONを送る場合:

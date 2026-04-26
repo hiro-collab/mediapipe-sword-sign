@@ -3,6 +3,7 @@
 from .detector import DetectionResult, SwordSignDetector
 from .features import FEATURE_DIMENSION, features_from_hand_landmarks, relative_landmark_features
 from .ports import AsyncGesturePublisher, GesturePublisher
+from .temporal import GestureHoldState, GestureHoldTracker
 from .types import (
     GESTURE_NONE,
     GESTURE_SWORD_SIGN,
@@ -20,6 +21,8 @@ __all__ = [
     "GesturePrediction",
     "GesturePublisher",
     "GestureState",
+    "GestureHoldState",
+    "GestureHoldTracker",
     "SwordSignDetector",
     "AsyncGesturePublisher",
     "features_from_hand_landmarks",
