@@ -1,7 +1,8 @@
 import cv2
 import mediapipe as mp
 import csv
-import os
+
+from mediapipe_sword_sign import features_from_hand_landmarks
 
 def main():
     mp_hands = mp.solutions.hands
@@ -28,15 +29,8 @@ def main():
 
             if results.multi_hand_landmarks and label is not None:
                 for hand_landmarks in results.multi_hand_landmarks:
-                    # 手首(0番)の座標を基準(0,0,0)にする
-                    base_x = hand_landmarks.landmark[0].x
-                    base_y = hand_landmarks.landmark[0].y
-                    base_z = hand_landmarks.landmark[0].z
-
                     row = [label]
-                    for lm in hand_landmarks.landmark:
-                        # 相対座標を計算
-                        row.extend([lm.x - base_x, lm.y - base_y, lm.z - base_z])
+                    row.extend(features_from_hand_landmarks(hand_landmarks))
                     
                     with open(csv_path, 'a', newline='') as f:
                         writer = csv.writer(f)

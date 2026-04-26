@@ -1,10 +1,11 @@
 [project]
-name = "mediapipe-test"
+name = "mediapipe-sword-sign"
 version = "0.1.0"
-description = "Add your description here"
+description = "MediaPipe-based sword sign gesture recognition module"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "joblib>=1.5.2",
     "mediapipe==0.10.14",
     "opencv-python>=4.13.0.92",
     "pandas>=3.0.2",

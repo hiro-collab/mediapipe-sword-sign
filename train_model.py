@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
@@ -25,5 +27,4 @@ def train():
     print("モデルを保存しました。")
 
 if __name__ == "__main__":
-    import os
     train()
