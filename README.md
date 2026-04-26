@@ -53,3 +53,20 @@ print(state.to_json())
    `uv run predict.py`
 4. 単体テスト
    `uv run python -m unittest discover -s tests`
+
+## Adapters
+
+UDPで `GestureState` JSONを送る場合:
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --print-json
+```
+
+WebSocketで接続中のクライアントへbroadcastする場合:
+
+```bash
+uv run python apps/serve_websocket.py --host 127.0.0.1 --port 8765
+```
+
+Difyや音声入力とのつなぎ方は、実運用コードではなく参考サンプルとして
+`examples/sword_push_to_talk_sample.py` に置いています。
