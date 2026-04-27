@@ -57,6 +57,27 @@ print(state.to_json())
 5. 設定GUI
    `uv run python apps/settings_gui.py`
 
+## Without uv
+
+uvがない環境でも、Pythonの仮想環境とpipで実行できます。
+プロジェクトを作り直す必要はありません。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python apps/settings_gui.py
+```
+
+学習や推論も同じ環境で実行できます。
+
+```powershell
+python collect_data.py
+python train_model.py
+python predict.py
+```
+
 ## Settings GUI
 
 設定GUIは、モデルや判定しきい値を調整しながら現在フレーム判定と継続判定を確認するためのデバッグツールです。
@@ -83,7 +104,8 @@ uv run python apps/settings_gui.py
 状態表示の見方です。
 
 - `Current`: `SwordSignDetector` による現在フレームの判定です。
-- `Confidence`: 現在フレームで最も高かった推論信頼度です。
+- `Best Confidence`: 現在フレームで最も高かった推論信頼度です。
+- `Target Confidence`: `Target` で選択しているgestureの現在フレーム信頼度です。
 - `Hold State`: `Hold` と `Grace` を加味した継続判定の状態です。
 - `Held For`: 対象gestureが継続している時間です。
 - `Event`: stable active への切り替わり、または release を表示します。

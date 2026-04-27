@@ -45,6 +45,7 @@ class GestureSettingsGui:
 
         self.current_state = tk.StringVar(value="Stopped")
         self.current_confidence = tk.StringVar(value="-")
+        self.target_confidence = tk.StringVar(value="-")
         self.hold_state = tk.StringVar(value="-")
         self.held_for = tk.StringVar(value="0.00s")
         self.event_state = tk.StringVar(value="-")
@@ -108,7 +109,8 @@ class GestureSettingsGui:
         state.columnconfigure(1, weight=1)
         rows = [
             ("Current", self.current_state),
-            ("Confidence", self.current_confidence),
+            ("Best Confidence", self.current_confidence),
+            ("Target Confidence", self.target_confidence),
             ("Hold State", self.hold_state),
             ("Held For", self.held_for),
             ("Event", self.event_state),
@@ -159,6 +161,7 @@ class GestureSettingsGui:
         self.hold_tracker.reset()
         self.current_state.set("Stopped")
         self.current_confidence.set("-")
+        self.target_confidence.set("-")
         self.hold_state.set("-")
         self.held_for.set("0.00s")
         self._destroy_preview()
@@ -196,8 +199,10 @@ class GestureSettingsGui:
         best = state.best_gesture()
         current_name = state.primary or "searching"
         confidence = best.confidence if best else 0.0
+        target_confidence = state.gesture(self.target_gesture.get()).confidence
         self.current_state.set(DISPLAY_NAMES.get(current_name, current_name))
         self.current_confidence.set(f"{confidence:.3f}")
+        self.target_confidence.set(f"{target_confidence:.3f}")
         self.hold_state.set("active" if hold.active else "inactive")
         self.held_for.set(f"{hold.held_for:.2f}s")
         if hold.activated:
@@ -206,20 +211,29 @@ class GestureSettingsGui:
             self.event_state.set(f"{hold.target} released")
 
         if self.show_preview.get():
-            self._show_preview(frame, result.hand_landmarks, state, hold.active, mirrored)
+            self._show_preview(frame, result.hand_landmarks, state, hold, mirrored)
         else:
             self._destroy_preview()
 
-    def _show_preview(self, frame, hand_landmarks, state, stable_active: bool, mirrored: bool) -> None:
+    def _show_preview(self, frame, hand_landmarks, state, hold, mirrored: bool) -> None:
         display = cv2.flip(frame, 1) if mirrored else frame.copy()
 
         if self.show_landmarks.get() and hand_landmarks is not None:
             self._draw_landmarks(display, hand_landmarks)
 
         current = state.primary or "searching"
-        status = f"{DISPLAY_NAMES.get(current, current)} / stable={stable_active}"
-        color = (0, 180, 0) if stable_active else (0, 0, 220)
+        best = state.best_gesture()
+        best_confidence = best.confidence if best else 0.0
+        target_confidence = state.gesture(self.target_gesture.get()).confidence
+        color = (0, 180, 0) if hold.active else (0, 0, 220)
+        status = f"{DISPLAY_NAMES.get(current, current)} / stable={hold.active}"
+        confidence = (
+            f"best={best_confidence:.3f} "
+            f"target={hold.target}:{target_confidence:.3f} "
+            f"held={hold.held_for:.2f}s"
+        )
         cv2.putText(display, status, (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        cv2.putText(display, confidence, (10, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
         cv2.imshow(PREVIEW_WINDOW, display)
         if cv2.waitKey(1) & 0xFF == 27:
             self.stop()
