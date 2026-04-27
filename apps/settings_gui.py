@@ -28,6 +28,8 @@ class GestureSettingsGui:
 
         self.camera_index = tk.IntVar(value=0)
         self.model_path = tk.StringVar(value=str(Path("gesture_model.pkl")))
+        self.model_sha256 = tk.StringVar(value="")
+        self.allow_untrusted_model = tk.BooleanVar(value=False)
         self.threshold = tk.DoubleVar(value=0.9)
         self.hold_seconds = tk.DoubleVar(value=0.5)
         self.release_grace_seconds = tk.DoubleVar(value=0.1)
@@ -65,25 +67,28 @@ class GestureSettingsGui:
         ttk.Entry(settings, textvariable=self.model_path).grid(row=0, column=1, sticky="ew", pady=4)
         ttk.Button(settings, text="Browse", command=self._browse_model).grid(row=0, column=2, padx=(8, 0), pady=4)
 
-        ttk.Label(settings, text="Camera").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Spinbox(settings, from_=0, to=10, textvariable=self.camera_index, width=8).grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Label(settings, text="Model SHA-256").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(settings, textvariable=self.model_sha256).grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
 
-        ttk.Label(settings, text="Threshold").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Scale(settings, from_=0.5, to=1.0, variable=self.threshold, command=lambda _value: self._sync_labels()).grid(row=2, column=1, sticky="ew", pady=4)
+        ttk.Label(settings, text="Camera").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Spinbox(settings, from_=0, to=10, textvariable=self.camera_index, width=8).grid(row=2, column=1, sticky="w", pady=4)
+
+        ttk.Label(settings, text="Threshold").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Scale(settings, from_=0.5, to=1.0, variable=self.threshold, command=lambda _value: self._sync_labels()).grid(row=3, column=1, sticky="ew", pady=4)
         self.threshold_label = ttk.Label(settings, width=6)
-        self.threshold_label.grid(row=2, column=2, sticky="e", pady=4)
+        self.threshold_label.grid(row=3, column=2, sticky="e", pady=4)
 
-        ttk.Label(settings, text="Hold").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Scale(settings, from_=0.0, to=3.0, variable=self.hold_seconds, command=lambda _value: self._sync_labels()).grid(row=3, column=1, sticky="ew", pady=4)
+        ttk.Label(settings, text="Hold").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Scale(settings, from_=0.0, to=3.0, variable=self.hold_seconds, command=lambda _value: self._sync_labels()).grid(row=4, column=1, sticky="ew", pady=4)
         self.hold_label = ttk.Label(settings, width=6)
-        self.hold_label.grid(row=3, column=2, sticky="e", pady=4)
+        self.hold_label.grid(row=4, column=2, sticky="e", pady=4)
 
-        ttk.Label(settings, text="Grace").grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Scale(settings, from_=0.0, to=1.0, variable=self.release_grace_seconds, command=lambda _value: self._sync_labels()).grid(row=4, column=1, sticky="ew", pady=4)
+        ttk.Label(settings, text="Grace").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Scale(settings, from_=0.0, to=1.0, variable=self.release_grace_seconds, command=lambda _value: self._sync_labels()).grid(row=5, column=1, sticky="ew", pady=4)
         self.grace_label = ttk.Label(settings, width=6)
-        self.grace_label.grid(row=4, column=2, sticky="e", pady=4)
+        self.grace_label.grid(row=5, column=2, sticky="e", pady=4)
 
-        ttk.Label(settings, text="Target").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Label(settings, text="Target").grid(row=6, column=0, sticky="w", pady=4)
         target = ttk.Combobox(
             settings,
             textvariable=self.target_gesture,
@@ -91,13 +96,14 @@ class GestureSettingsGui:
             state="readonly",
             width=18,
         )
-        target.grid(row=5, column=1, sticky="w", pady=4)
+        target.grid(row=6, column=1, sticky="w", pady=4)
 
         toggles = ttk.Frame(settings)
-        toggles.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        toggles.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Checkbutton(toggles, text="Mirror", variable=self.mirror_preview).grid(row=0, column=0, padx=(0, 12))
         ttk.Checkbutton(toggles, text="Landmarks", variable=self.show_landmarks).grid(row=0, column=1, padx=(0, 12))
-        ttk.Checkbutton(toggles, text="Preview", variable=self.show_preview).grid(row=0, column=2)
+        ttk.Checkbutton(toggles, text="Preview", variable=self.show_preview).grid(row=0, column=2, padx=(0, 12))
+        ttk.Checkbutton(toggles, text="Allow untrusted model", variable=self.allow_untrusted_model).grid(row=0, column=3)
 
         controls = ttk.Frame(root, padding=(12, 0, 12, 0))
         controls.grid(row=1, column=0, sticky="ew")
@@ -132,9 +138,12 @@ class GestureSettingsGui:
     def start(self) -> None:
         self.stop()
         model_path = self.model_path.get().strip() or None
+        model_sha256 = self.model_sha256.get().strip() or None
         try:
             self.detector = SwordSignDetector(
                 model_path=model_path,
+                expected_model_sha256=model_sha256,
+                allow_untrusted_model=self.allow_untrusted_model.get(),
                 threshold=self.threshold.get(),
             )
             self.detector.__enter__()

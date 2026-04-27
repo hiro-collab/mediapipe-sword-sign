@@ -22,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--threshold", type=float, default=0.9)
     parser.add_argument("--model-path")
+    parser.add_argument("--model-sha256")
+    parser.add_argument("--allow-untrusted-model", action="store_true")
     parser.add_argument("--interval", type=float, default=0.0)
     parser.add_argument("--print-json", action="store_true")
     return parser
@@ -35,7 +37,12 @@ def main() -> None:
 
     try:
         with (
-            SwordSignDetector(model_path=args.model_path, threshold=args.threshold) as detector,
+            SwordSignDetector(
+                model_path=args.model_path,
+                expected_model_sha256=args.model_sha256,
+                allow_untrusted_model=args.allow_untrusted_model,
+                threshold=args.threshold,
+            ) as detector,
             UdpGesturePublisher(args.host, args.port) as publisher,
         ):
             while True:

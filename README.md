@@ -57,6 +57,29 @@ print(state.to_json())
 5. 設定GUI
    `uv run python apps/settings_gui.py`
 
+## Security Notes
+
+このリポジトリはローカル実験用ですが、公開・共有する場合は以下を守ってください。
+
+- `.env`、ログ、CSV、`.pkl` は `.gitignore` 対象です。収集データや学習済みモデルは、公開リポジトリではなく信頼できる保管先で管理してください。
+- `gesture_model.pkl` は joblib/pickle 形式です。信頼できない `.pkl` を読み込むと任意コード実行につながるため、既定ではプロジェクト配下のモデルだけを読み込みます。
+- 外部から受け取ったモデルを使う場合は、SHA-256を確認して `--model-sha256` を指定してください。どうしても検証なしで読む場合だけ `--allow-untrusted-model` を明示します。
+
+```powershell
+Get-FileHash .\gesture_model.pkl -Algorithm SHA256
+uv run python apps/settings_gui.py
+uv run python apps/serve_websocket.py --model-path .\gesture_model.pkl --model-sha256 <SHA256>
+```
+
+WebSocketをlocalhost以外に公開する場合は、トークンなしでは起動を拒否します。トークンはコマンドライン引数ではなく環境変数で渡してください。
+
+```powershell
+$env:GESTURE_WS_TOKEN = "<random-token>"
+uv run python apps/serve_websocket.py --host 0.0.0.0 --auth-token-env GESTURE_WS_TOKEN --allowed-origin http://localhost:3000
+```
+
+クライアントは `Authorization: Bearer <token>`、`X-Gesture-Token`、または検証済みローカル用途に限って `?token=<token>` で接続できます。URLクエリはログに残りやすいので、実運用ではヘッダーを使ってください。
+
 ## Without uv
 
 uvがない環境でも、Pythonの仮想環境とpipで実行できます。

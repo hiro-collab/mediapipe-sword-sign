@@ -2,6 +2,7 @@
 
 from .detector import DetectionResult, SwordSignDetector
 from .features import FEATURE_DIMENSION, features_from_hand_landmarks, relative_landmark_features
+from .model_loader import UnsafeModelError, file_sha256
 from .ports import AsyncGesturePublisher, GesturePublisher
 from .temporal import GestureHoldState, GestureHoldTracker
 from .types import (
@@ -24,7 +25,9 @@ __all__ = [
     "GestureHoldState",
     "GestureHoldTracker",
     "SwordSignDetector",
+    "UnsafeModelError",
     "AsyncGesturePublisher",
+    "file_sha256",
     "features_from_hand_landmarks",
     "relative_landmark_features",
 ]

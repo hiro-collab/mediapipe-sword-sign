@@ -1,5 +1,9 @@
 .venv/
 __pycache__/
-#*.csv
-#*.pkl
+*.csv
+*.pkl
+*.log
+.env
+.env.*
+!.env.example
 .uv/

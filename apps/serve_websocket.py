@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -22,7 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--threshold", type=float, default=0.9)
     parser.add_argument("--model-path")
+    parser.add_argument("--model-sha256")
+    parser.add_argument("--allow-untrusted-model", action="store_true")
     parser.add_argument("--interval", type=float, default=1 / 30)
+    parser.add_argument("--auth-token-env", default="GESTURE_WS_TOKEN")
+    parser.add_argument("--allowed-origin", action="append", dest="allowed_origins")
+    parser.add_argument("--max-clients", type=int, default=8)
+    parser.add_argument("--allow-remote-unauthenticated", action="store_true")
     return parser
 
 
@@ -31,11 +38,24 @@ async def run(args: argparse.Namespace) -> None:
     if not cap.isOpened():
         raise RuntimeError(f"camera not available: {args.camera_index}")
 
-    broadcaster = WebSocketGestureBroadcaster(args.host, args.port)
+    auth_token = os.environ.get(args.auth_token_env) if args.auth_token_env else None
+    broadcaster = WebSocketGestureBroadcaster(
+        args.host,
+        args.port,
+        auth_token=auth_token,
+        allowed_origins=args.allowed_origins,
+        max_clients=args.max_clients,
+        allow_remote_unauthenticated=args.allow_remote_unauthenticated,
+    )
     try:
         async with broadcaster:
             print(f"WebSocket gesture broadcaster listening on ws://{args.host}:{args.port}")
-            with SwordSignDetector(model_path=args.model_path, threshold=args.threshold) as detector:
+            with SwordSignDetector(
+                model_path=args.model_path,
+                expected_model_sha256=args.model_sha256,
+                allow_untrusted_model=args.allow_untrusted_model,
+                threshold=args.threshold,
+            ) as detector:
                 while True:
                     success, frame = cap.read()
                     if success:

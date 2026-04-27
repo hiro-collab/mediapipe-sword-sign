@@ -54,7 +54,11 @@ class SampleVoiceSession:
 
 class SampleDifyClient:
     async def send_message(self, text: str, context: dict[str, Any]) -> str:
-        print(f"dify request text={text!r} context_primary={context['gesture_state']['primary']!r}")
+        print(
+            "dify request "
+            f"text_length={len(text)} "
+            f"context_primary={context['gesture_state']['primary']!r}"
+        )
         return "これはDify応答のサンプルです"
 
 
@@ -65,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--threshold", type=float, default=0.9)
     parser.add_argument("--model-path")
+    parser.add_argument("--model-sha256")
+    parser.add_argument("--allow-untrusted-model", action="store_true")
     parser.add_argument("--interval", type=float, default=1 / 30)
     return parser
 
@@ -79,7 +85,12 @@ async def run(args: argparse.Namespace) -> None:
     dify = SampleDifyClient()
 
     try:
-        with SwordSignDetector(model_path=args.model_path, threshold=args.threshold) as detector:
+        with SwordSignDetector(
+            model_path=args.model_path,
+            expected_model_sha256=args.model_sha256,
+            allow_untrusted_model=args.allow_untrusted_model,
+            threshold=args.threshold,
+        ) as detector:
             while True:
                 success, frame = cap.read()
                 if not success:
@@ -97,7 +108,7 @@ async def run(args: argparse.Namespace) -> None:
                         transcript,
                         context={"gesture_state": state.to_dict()},
                     )
-                    print(f"dify response={response!r}")
+                    print(f"dify response_length={len(response)}")
 
                 await asyncio.sleep(args.interval)
     finally:

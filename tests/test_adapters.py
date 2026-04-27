@@ -48,6 +48,20 @@ class FailingWebSocketClient:
         raise ConnectionError("client disconnected")
 
 
+class ClosingWebSocketClient:
+    def __init__(self):
+        self.closed = []
+
+    async def close(self, *, code, reason):
+        self.closed.append((code, reason))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
 class AdapterTests(unittest.TestCase):
     def test_udp_publisher_sends_gesture_state_json(self):
         fake_socket = FakeSocket()
@@ -80,6 +94,36 @@ class AdapterTests(unittest.TestCase):
 
             await broadcaster.publish(make_state())
 
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_requires_auth_for_remote_bind(self):
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(host="0.0.0.0")
+
+    def test_websocket_broadcaster_rejects_wrong_token(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
+
+            await broadcaster._handler(client, "/?token=wrong")
+
+            self.assertEqual(client.closed, [(1008, "unauthorized")])
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_rejects_clients_over_limit(self):
+        async def run():
+            existing_client = FakeWebSocketClient()
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster(max_clients=1)
+            broadcaster.clients.add(existing_client)
+
+            await broadcaster._handler(client, "/")
+
+            self.assertEqual(client.closed, [(1013, "too many clients")])
             self.assertNotIn(client, broadcaster.clients)
 
         asyncio.run(run())

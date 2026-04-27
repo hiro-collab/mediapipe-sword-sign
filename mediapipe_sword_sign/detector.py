@@ -33,12 +33,18 @@ class SwordSignDetector:
         *,
         model=None,
         model_path: str | Path | None = None,
+        expected_model_sha256: str | None = None,
+        allow_untrusted_model: bool = False,
         threshold: float = DEFAULT_THRESHOLD,
         labels: Mapping[int, str] | None = None,
         source: str = DEFAULT_SOURCE,
         model_complexity: int = 1,
     ) -> None:
-        self.model = model if model is not None else load_gesture_model(model_path)
+        self.model = model if model is not None else load_gesture_model(
+            model_path,
+            expected_sha256=expected_model_sha256,
+            allow_untrusted=allow_untrusted_model,
+        )
         self.threshold = float(threshold)
         self.labels = dict(labels or DEFAULT_LABELS)
         self.source = source
