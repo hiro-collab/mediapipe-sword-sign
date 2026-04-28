@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
+import tomllib
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cache
+from importlib import metadata as importlib_metadata
 from pathlib import Path
+from typing import Mapping
 
 import cv2
 
@@ -18,7 +23,10 @@ from mediapipe_sword_sign.adapters import UdpGesturePublisher
 from mediapipe_sword_sign.types import GestureState
 
 
+PACKAGE_NAME = "mediapipe-sword-sign"
+SOURCE_NAME = "mediapipe_sword_sign"
 PREVIEW_WINDOW = "Gesture UDP Preview"
+DEFAULT_CAMERA_SCAN_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -30,6 +38,29 @@ class DebugEvery:
         if self.unit == "frames":
             return str(int(self.value))
         return f"{self.value:g}s"
+
+
+@dataclass
+class FpsTracker:
+    last_frame_at: float | None = None
+    fps: float = 0.0
+
+    def update(self, now: float) -> float:
+        if self.last_frame_at is not None:
+            elapsed = now - self.last_frame_at
+            if elapsed > 0:
+                self.fps = 1.0 / elapsed
+        self.last_frame_at = now
+        return self.fps
+
+
+@cache
+def get_version() -> str:
+    try:
+        return importlib_metadata.version(PACKAGE_NAME)
+    except importlib_metadata.PackageNotFoundError:
+        with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
+            return str(tomllib.load(file)["project"]["version"])
 
 
 def parse_debug_every(value: str) -> DebugEvery:
@@ -70,8 +101,41 @@ def parse_debug_every(value: str) -> DebugEvery:
     return DebugEvery(value=int(parsed) if unit == "frames" else parsed, unit=unit)
 
 
+def parse_optional_interval(value: str) -> DebugEvery | None:
+    text = value.strip().lower()
+    if text in {"0", "off", "none", "disabled"}:
+        return None
+    return parse_debug_every(value)
+
+
 def format_bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def format_json(payload: Mapping[str, object]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def print_json(payload: Mapping[str, object]) -> None:
+    print(format_json(payload), flush=True)
+
+
+def eprint(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def destination_payload(destination: tuple[str, int]) -> dict[str, object]:
+    host, port = destination
+    return {"host": host, "port": port}
+
+
+def best_gesture_snapshot(state: GestureState) -> tuple[str, float]:
+    if not state.hand_detected:
+        return "none", 0.0
+    best = state.best_gesture()
+    if best is None:
+        return "none", 0.0
+    return best.name, best.confidence
 
 
 def format_debug_summary(
@@ -82,13 +146,7 @@ def format_debug_summary(
     destination: tuple[str, int],
 ) -> str:
     sword = state.sword_sign
-    if state.hand_detected:
-        best = state.best_gesture()
-        best_name = best.name if best else "none"
-        best_confidence = best.confidence if best else 0.0
-    else:
-        best_name = "none"
-        best_confidence = 0.0
+    best_name, best_confidence = best_gesture_snapshot(state)
     host, port = destination
     return (
         f"frame={frame_number} "
@@ -113,6 +171,205 @@ def should_print_debug(
     if debug_every.unit == "frames":
         return frame_number == 1 or frame_number % int(debug_every.value) == 0
     return last_debug_at is None or now - last_debug_at >= debug_every.value
+
+
+def probe_camera(index: int) -> dict[str, object]:
+    cap = cv2.VideoCapture(index)
+    try:
+        available = cap.isOpened()
+        payload: dict[str, object] = {
+            "index": index,
+            "available": bool(available),
+        }
+        if available:
+            payload["width"] = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            payload["height"] = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            payload["fps"] = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        return payload
+    finally:
+        cap.release()
+
+
+def list_camera_payload(*, selected_index: int, scan_limit: int) -> dict[str, object]:
+    return {
+        "type": "camera_list",
+        "source": SOURCE_NAME,
+        "selected_camera_index": selected_index,
+        "cameras": [
+            probe_camera(index)
+            for index in range(max(0, scan_limit) + 1)
+        ],
+    }
+
+
+def check_model(args: argparse.Namespace) -> dict[str, object]:
+    try:
+        detector = SwordSignDetector(
+            model_path=args.model_path,
+            expected_model_sha256=args.model_sha256,
+            allow_untrusted_model=args.allow_untrusted_model,
+            threshold=args.threshold,
+        )
+        detector.close()
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+    return {"available": True}
+
+
+def health_payload(args: argparse.Namespace) -> dict[str, object]:
+    camera = probe_camera(args.camera_index)
+    model = check_model(args)
+    ok = bool(camera["available"]) and bool(model["available"])
+    return {
+        "type": "gesture_health",
+        "source": SOURCE_NAME,
+        "status": "ok" if ok else "error",
+        "version": get_version(),
+        "camera": {
+            "selected_index": args.camera_index,
+            "available": bool(camera["available"]),
+        },
+        "model": model,
+        "udp": destination_payload((args.host, args.port)),
+    }
+
+
+def runtime_metadata(
+    state: GestureState,
+    *,
+    frame_number: int,
+    fps: float,
+) -> dict[str, object]:
+    return {
+        "frame_id": frame_number,
+        "hand_detected": bool(state.hand_detected),
+        "primary_gesture": state.primary,
+        "fps": round(fps, 3),
+    }
+
+
+def state_with_runtime_metadata(
+    state: GestureState,
+    *,
+    frame_number: int,
+    fps: float,
+) -> GestureState:
+    metadata = dict(state.metadata or {})
+    metadata.update(runtime_metadata(state, frame_number=frame_number, fps=fps))
+    return replace(state, metadata=metadata)
+
+
+def status_payload(
+    state: GestureState,
+    *,
+    frame_number: int,
+    camera_index: int,
+    destination: tuple[str, int],
+    fps: float,
+) -> dict[str, object]:
+    best_name, best_confidence = best_gesture_snapshot(state)
+    sword = state.sword_sign
+    return {
+        "type": "gesture_status",
+        "source": SOURCE_NAME,
+        "status": "running",
+        "timestamp": time.time(),
+        "version": get_version(),
+        "camera": {
+            "selected_index": camera_index,
+            "opened": True,
+        },
+        "udp": destination_payload(destination),
+        "frame_id": frame_number,
+        "hand_detected": bool(state.hand_detected),
+        "primary_gesture": state.primary,
+        "sword_sign": {
+            "active": bool(sword.active),
+            "confidence": float(sword.confidence),
+        },
+        "best_gesture": {
+            "name": best_name,
+            "confidence": float(best_confidence),
+        },
+        "fps": round(fps, 3),
+    }
+
+
+def heartbeat_payload(
+    *,
+    frame_number: int,
+    camera_index: int,
+    destination: tuple[str, int],
+    fps: float,
+) -> dict[str, object]:
+    return {
+        "type": "gesture_heartbeat",
+        "source": SOURCE_NAME,
+        "status": "sending",
+        "timestamp": time.time(),
+        "camera": {
+            "selected_index": camera_index,
+            "opened": True,
+        },
+        "udp": destination_payload(destination),
+        "frame_id": frame_number,
+        "fps": round(fps, 3),
+    }
+
+
+def schema_payload() -> dict[str, object]:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "MediaPipe Sword Sign UDP messages",
+        "oneOf": [
+            {
+                "title": "GestureState",
+                "type": "object",
+                "required": ["type", "timestamp", "source", "hand_detected", "primary", "gestures"],
+                "properties": {
+                    "type": {"const": "gesture_state"},
+                    "timestamp": {"type": "number"},
+                    "source": {"type": "string"},
+                    "hand_detected": {"type": "boolean"},
+                    "primary": {"type": ["string", "null"]},
+                    "gestures": {"type": "object"},
+                    "metadata": {
+                        "type": "object",
+                        "properties": {
+                            "frame_id": {"type": "integer"},
+                            "hand_detected": {"type": "boolean"},
+                            "primary_gesture": {"type": ["string", "null"]},
+                            "fps": {"type": "number"},
+                        },
+                    },
+                },
+            },
+            {
+                "title": "GestureStatus",
+                "type": "object",
+                "required": ["type", "status", "camera", "udp", "frame_id", "fps"],
+                "properties": {
+                    "type": {"const": "gesture_status"},
+                    "status": {"const": "running"},
+                    "camera": {"type": "object"},
+                    "udp": {"type": "object"},
+                    "frame_id": {"type": "integer"},
+                    "fps": {"type": "number"},
+                },
+            },
+            {
+                "title": "GestureHeartbeat",
+                "type": "object",
+                "required": ["type", "status", "camera", "udp"],
+                "properties": {
+                    "type": {"const": "gesture_heartbeat"},
+                    "status": {"const": "sending"},
+                    "camera": {"type": "object"},
+                    "udp": {"type": "object"},
+                },
+            },
+        ],
+    }
 
 
 def suppress_protobuf_deprecation_warnings() -> None:
@@ -163,9 +420,20 @@ def build_parser() -> argparse.ArgumentParser:
         description="Publish GestureState JSON over UDP.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_version()}",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--camera-index", type=int, default=0)
+    parser.add_argument(
+        "--camera-scan-limit",
+        type=int,
+        default=DEFAULT_CAMERA_SCAN_LIMIT,
+        help="highest camera index to probe for --list-cameras",
+    )
     parser.add_argument("--threshold", type=float, default=0.9)
     parser.add_argument("--model-path")
     parser.add_argument("--model-sha256")
@@ -180,9 +448,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="debug interval; bare numbers are frames, add s/sec/seconds for time",
     )
     parser.add_argument(
+        "--status-json",
+        action="store_true",
+        help="print runtime status JSON lines",
+    )
+    parser.add_argument(
+        "--status-every",
+        type=parse_debug_every,
+        default=DebugEvery(1.0, "seconds"),
+        help="status JSON interval; bare numbers are frames, add s/sec/seconds for time",
+    )
+    parser.add_argument(
+        "--heartbeat-every",
+        type=parse_optional_interval,
+        default=None,
+        help="send UDP heartbeat interval; use 0/off/none to disable",
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
         help="show an OpenCV preview window with gesture overlay",
+    )
+    parser.add_argument(
+        "--health-json",
+        action="store_true",
+        help="print one health check JSON object and exit",
+    )
+    parser.add_argument(
+        "--schema-json",
+        action="store_true",
+        help="print JSON schema for UDP/status messages and exit",
+    )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="probe camera indexes and print JSON",
+    )
+    parser.add_argument(
+        "--dry-run",
+        "--check-config",
+        dest="dry_run",
+        action="store_true",
+        help="validate model, camera, and UDP config without publishing",
     )
     parser.add_argument(
         "--suppress-protobuf-warnings",
@@ -192,17 +499,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main() -> int:
     args = build_parser().parse_args()
     if args.suppress_protobuf_warnings:
         suppress_protobuf_deprecation_warnings()
+
+    if args.schema_json:
+        print_json(schema_payload())
+        return 0
+
+    if args.list_cameras:
+        print_json(
+            list_camera_payload(
+                selected_index=args.camera_index,
+                scan_limit=args.camera_scan_limit,
+            )
+        )
+        return 0
+
+    if args.health_json or args.dry_run:
+        payload = health_payload(args)
+        print_json(payload)
+        return 0 if payload["status"] == "ok" else 1
 
     cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"camera not available: {args.camera_index}")
 
     frame_number = 0
+    fps_tracker = FpsTracker()
     last_debug_at: float | None = None
+    last_status_at: float | None = None
+    last_heartbeat_at: float | None = None
     try:
         with (
             SwordSignDetector(
@@ -213,6 +541,22 @@ def main() -> None:
             ) as detector,
             UdpGesturePublisher(args.host, args.port) as publisher,
         ):
+            eprint(
+                "selected_camera="
+                f"{args.camera_index} udp={args.host}:{args.port} version={get_version()}"
+            )
+            eprint(f"udp_sending destination={args.host}:{args.port}")
+            if args.heartbeat_every is not None:
+                publisher.publish_payload(
+                    heartbeat_payload(
+                        frame_number=frame_number,
+                        camera_index=args.camera_index,
+                        destination=publisher.address,
+                        fps=0.0,
+                    )
+                )
+                last_heartbeat_at = time.monotonic()
+
             while True:
                 success, frame = cap.read()
                 if not success:
@@ -220,12 +564,17 @@ def main() -> None:
                     continue
 
                 frame_number += 1
-                state = detector.detect(frame, flip=True)
+                now = time.monotonic()
+                fps = fps_tracker.update(now)
+                state = state_with_runtime_metadata(
+                    detector.detect(frame, flip=True),
+                    frame_number=frame_number,
+                    fps=fps,
+                )
                 publisher.publish(state)
                 if args.print_json:
                     print(state.to_json(), flush=True)
 
-                now = time.monotonic()
                 if args.debug and should_print_debug(
                     args.debug_every,
                     frame_number=frame_number,
@@ -243,6 +592,39 @@ def main() -> None:
                     )
                     last_debug_at = now
 
+                if args.status_json and should_print_debug(
+                    args.status_every,
+                    frame_number=frame_number,
+                    last_debug_at=last_status_at,
+                    now=now,
+                ):
+                    print_json(
+                        status_payload(
+                            state,
+                            frame_number=frame_number,
+                            camera_index=args.camera_index,
+                            destination=publisher.address,
+                            fps=fps,
+                        )
+                    )
+                    last_status_at = now
+
+                if args.heartbeat_every is not None and should_print_debug(
+                    args.heartbeat_every,
+                    frame_number=frame_number,
+                    last_debug_at=last_heartbeat_at,
+                    now=now,
+                ):
+                    publisher.publish_payload(
+                        heartbeat_payload(
+                            frame_number=frame_number,
+                            camera_index=args.camera_index,
+                            destination=publisher.address,
+                            fps=fps,
+                        )
+                    )
+                    last_heartbeat_at = now
+
                 if args.preview:
                     display = cv2.flip(frame, 1)
                     draw_preview_overlay(display, state, destination=publisher.address)
@@ -258,7 +640,9 @@ def main() -> None:
         cap.release()
         if args.preview:
             cv2.destroyAllWindows()
+        eprint("stopped")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

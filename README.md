@@ -180,6 +180,35 @@ uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --preview --debug
 MediaPipe経由でprotobufのdeprecation warningが通常ログに混ざる場合は、必要なときだけ
 `--suppress-protobuf-warnings` を追加してください。デフォルトではwarningの扱いを変更しません。
 
+統合側から起動前確認や機械読み取りを行うための汎用オプションもあります。
+
+```bash
+uv run python apps/publish_udp.py --version
+uv run python apps/publish_udp.py --schema-json
+uv run python apps/publish_udp.py --list-cameras
+uv run python apps/publish_udp.py --health-json --host 127.0.0.1 --port 8765
+uv run python apps/publish_udp.py --check-config --host 127.0.0.1 --port 8765
+```
+
+実行中の状態をJSON行で監視したい場合は `--status-json` を指定します。
+`--status-every` は `--debug-every` と同じく、裸の数値ならフレーム間隔、`s` 付きなら秒間隔です。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --status-json --status-every 1s
+```
+
+UDP受信側へ送信中であることを示すheartbeatを出したい場合は、明示的に `--heartbeat-every` を指定します。
+既存receiverとの互換性を保つため、heartbeatはデフォルトでは送信しません。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --heartbeat-every 5s
+```
+
+通常の `GestureState` payloadには、送信アダプタが汎用 `metadata` を追加します。
+現在は `frame_id`、`hand_detected`、`primary_gesture`、`fps` を含みます。
+起動時は選択カメラとUDP送信先をstderrに短く表示し、終了時は `stopped` をstderrに出します。
+ログにはtokenやAPI keyなどの秘密情報を出さない方針です。
+
 WebSocketで接続中のクライアントへbroadcastする場合:
 
 ```bash

@@ -73,6 +73,16 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(address, ("127.0.0.1", 9999))
         self.assertEqual(json.loads(payload.decode("utf-8"))["primary"], "sword_sign")
 
+    def test_udp_publisher_sends_generic_json_payload(self):
+        fake_socket = FakeSocket()
+        publisher = UdpGesturePublisher("127.0.0.1", 9999, sock=fake_socket)
+
+        publisher.publish_payload({"type": "gesture_heartbeat", "status": "sending"})
+
+        payload, address = fake_socket.sent[0]
+        self.assertEqual(address, ("127.0.0.1", 9999))
+        self.assertEqual(json.loads(payload.decode("utf-8"))["status"], "sending")
+
     def test_websocket_broadcaster_sends_to_connected_clients(self):
         async def run():
             client = FakeWebSocketClient()

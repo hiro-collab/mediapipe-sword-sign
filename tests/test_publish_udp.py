@@ -3,9 +3,16 @@ import unittest
 
 from apps.publish_udp import (
     DebugEvery,
+    FpsTracker,
     format_debug_summary,
+    heartbeat_payload,
     parse_debug_every,
+    parse_optional_interval,
+    runtime_metadata,
+    schema_payload,
     should_print_debug,
+    state_with_runtime_metadata,
+    status_payload,
 )
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
@@ -50,6 +57,16 @@ class PublishUdpDebugTests(unittest.TestCase):
             parse_debug_every("0")
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_debug_every("1.5")
+
+    def test_parse_optional_interval_accepts_disabled_values(self):
+        self.assertIsNone(parse_optional_interval("off"))
+        self.assertIsNone(parse_optional_interval("0"))
+        self.assertEqual(parse_optional_interval("5s"), DebugEvery(5.0, "seconds"))
+
+    def test_fps_tracker_updates_from_elapsed_time(self):
+        tracker = FpsTracker()
+        self.assertEqual(tracker.update(10.0), 0.0)
+        self.assertAlmostEqual(tracker.update(10.5), 2.0)
 
     def test_should_print_debug_supports_frame_and_second_intervals(self):
         every_30_frames = DebugEvery(30, "frames")
@@ -129,6 +146,60 @@ class PublishUdpDebugTests(unittest.TestCase):
 
         self.assertIn("hand_detected=false", summary)
         self.assertIn("best=none best.confidence=0.000", summary)
+
+    def test_runtime_metadata_is_attached_to_gesture_state(self):
+        state = state_with_runtime_metadata(
+            make_state(),
+            frame_number=12,
+            fps=29.9876,
+        )
+
+        self.assertEqual(
+            state.metadata,
+            {
+                "frame_id": 12,
+                "hand_detected": True,
+                "primary_gesture": None,
+                "fps": 29.988,
+            },
+        )
+        self.assertEqual(runtime_metadata(make_state(), frame_number=1, fps=2.0)["fps"], 2.0)
+
+    def test_status_payload_includes_runtime_fields(self):
+        payload = status_payload(
+            make_state(),
+            frame_number=42,
+            camera_index=1,
+            destination=("127.0.0.1", 8765),
+            fps=30.0,
+        )
+
+        self.assertEqual(payload["type"], "gesture_status")
+        self.assertEqual(payload["camera"]["selected_index"], 1)
+        self.assertEqual(payload["udp"], {"host": "127.0.0.1", "port": 8765})
+        self.assertEqual(payload["frame_id"], 42)
+        self.assertEqual(payload["best_gesture"]["name"], "victory")
+        self.assertEqual(payload["fps"], 30.0)
+
+    def test_heartbeat_payload_reports_sending_destination(self):
+        payload = heartbeat_payload(
+            frame_number=3,
+            camera_index=0,
+            destination=("127.0.0.1", 8765),
+            fps=15.5,
+        )
+
+        self.assertEqual(payload["type"], "gesture_heartbeat")
+        self.assertEqual(payload["status"], "sending")
+        self.assertEqual(payload["udp"], {"host": "127.0.0.1", "port": 8765})
+
+    def test_schema_payload_documents_message_types(self):
+        schema = schema_payload()
+        titles = {item["title"] for item in schema["oneOf"]}
+
+        self.assertIn("GestureState", titles)
+        self.assertIn("GestureStatus", titles)
+        self.assertIn("GestureHeartbeat", titles)
 
 
 if __name__ == "__main__":

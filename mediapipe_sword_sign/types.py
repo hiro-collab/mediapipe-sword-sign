@@ -47,6 +47,7 @@ class GestureState:
     gestures: Mapping[str, GesturePrediction]
     primary: str | None = None
     hand_detected: bool = False
+    metadata: Mapping[str, object] | None = None
 
     @property
     def sword_sign(self) -> GesturePrediction:
@@ -65,7 +66,7 @@ class GestureState:
         return max(self.gestures.values(), key=lambda gesture: gesture.confidence)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "type": "gesture_state",
             "timestamp": float(self.timestamp),
             "source": self.source,
@@ -76,6 +77,9 @@ class GestureState:
                 for name, gesture in self.gestures.items()
             },
         }
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        return payload
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
@@ -87,12 +91,14 @@ class GestureState:
         source: str,
         timestamp: float | None = None,
         labels: Mapping[int, str] | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> "GestureState":
         return cls(
             timestamp=time.time() if timestamp is None else timestamp,
             source=source,
             hand_detected=False,
             primary=None,
+            metadata=metadata,
             gestures={
                 name: GesturePrediction(name=name, active=False, confidence=0.0, label=label)
                 for label, name in (labels or DEFAULT_LABELS).items()

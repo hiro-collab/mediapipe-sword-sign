@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import socket
 from types import TracebackType
+from typing import Mapping
 
 from mediapipe_sword_sign.types import GestureState
 
@@ -24,6 +26,12 @@ class UdpGesturePublisher:
     @property
     def address(self) -> tuple[str, int]:
         return (self.host, self.port)
+
+    def publish_payload(self, payload: Mapping[str, object]) -> None:
+        self._sock.sendto(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(self.encoding),
+            self.address,
+        )
 
     def publish(self, state: GestureState) -> None:
         self._sock.sendto(state.to_json().encode(self.encoding), self.address)
