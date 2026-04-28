@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import tomllib
@@ -29,6 +30,7 @@ PREVIEW_WINDOW = "Gesture UDP Preview"
 DEFAULT_CAMERA_SCAN_LIMIT = 5
 MAX_CAMERA_SCAN_LIMIT = 16
 LOCAL_UDP_HOSTS = {"127.0.0.1", "localhost", "::1"}
+UDP_AUTH_TOKEN_ENV = "SWORD_VOICE_AGENT_AUTH_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,29 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "refusing to send gesture UDP to a non-local host without --allow-remote-udp"
         )
+
+
+def resolve_udp_auth_token(
+    *,
+    auth_token: str | None,
+    auth_token_env: str | None,
+) -> str | None:
+    if auth_token is not None:
+        token = auth_token.strip()
+        if not token:
+            raise ValueError("--auth-token must not be empty")
+        return token
+
+    if not auth_token_env:
+        return None
+    env_name = auth_token_env.strip()
+    if not env_name:
+        return None
+    token = os.environ.get(env_name)
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
 
 
 def format_bool(value: bool) -> str:
@@ -406,6 +431,7 @@ def schema_payload() -> dict[str, object]:
                     "type": {"const": "gesture_state"},
                     "timestamp": {"type": "number"},
                     "source": {"type": "string"},
+                    "auth_token": {"type": "string"},
                     "hand_detected": {"type": "boolean"},
                     "primary": {"type": ["string", "null"]},
                     "gestures": {"type": "object"},
@@ -426,6 +452,7 @@ def schema_payload() -> dict[str, object]:
                 "required": ["type", "status", "camera", "udp", "frame_id", "fps"],
                 "properties": {
                     "type": {"const": "gesture_status"},
+                    "auth_token": {"type": "string"},
                     "status": {"const": "running"},
                     "camera": {"type": "object"},
                     "udp": {"type": "object"},
@@ -439,6 +466,7 @@ def schema_payload() -> dict[str, object]:
                 "required": ["type", "status", "camera", "udp"],
                 "properties": {
                     "type": {"const": "gesture_heartbeat"},
+                    "auth_token": {"type": "string"},
                     "status": {"const": "sending"},
                     "camera": {"type": "object"},
                     "udp": {"type": "object"},
@@ -519,6 +547,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-remote-udp",
         action="store_true",
         help="allow sending gesture state UDP packets to a non-local host",
+    )
+    parser.add_argument(
+        "--auth-token",
+        help="attach this token as auth_token in UDP payloads; prefer --auth-token-env for shared use",
+    )
+    parser.add_argument(
+        "--auth-token-env",
+        default=UDP_AUTH_TOKEN_ENV,
+        help="environment variable that supplies the UDP auth_token payload field",
     )
     parser.add_argument("--print-json", action="store_true")
     parser.add_argument("--debug", action="store_true", help="print one-line state summaries")
@@ -601,6 +638,10 @@ def main() -> int:
 
     try:
         validate_runtime_args(args)
+        udp_auth_token = resolve_udp_auth_token(
+            auth_token=args.auth_token,
+            auth_token_env=args.auth_token_env,
+        )
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -626,7 +667,7 @@ def main() -> int:
                 allow_untrusted_model=args.allow_untrusted_model,
                 threshold=args.threshold,
             ) as detector,
-            UdpGesturePublisher(args.host, args.port) as publisher,
+            UdpGesturePublisher(args.host, args.port, auth_token=udp_auth_token) as publisher,
         ):
             eprint(
                 "selected_camera="

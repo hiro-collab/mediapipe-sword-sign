@@ -1,5 +1,6 @@
 import argparse
 import unittest
+from unittest import mock
 
 from apps.publish_udp import (
     DebugEvery,
@@ -11,6 +12,7 @@ from apps.publish_udp import (
     parse_optional_interval,
     parse_port,
     parse_threshold,
+    resolve_udp_auth_token,
     runtime_metadata,
     safe_model_error,
     schema_payload,
@@ -94,6 +96,38 @@ class PublishUdpDebugTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_runtime_args(argparse.Namespace(host="192.0.2.10", allow_remote_udp=False))
+
+    def test_resolve_udp_auth_token_reads_default_env(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"SWORD_VOICE_AGENT_AUTH_TOKEN": " env-secret "},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_udp_auth_token(
+                    auth_token=None,
+                    auth_token_env="SWORD_VOICE_AGENT_AUTH_TOKEN",
+                ),
+                "env-secret",
+            )
+
+    def test_resolve_udp_auth_token_prefers_direct_value(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"SWORD_VOICE_AGENT_AUTH_TOKEN": "env-secret"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_udp_auth_token(
+                    auth_token=" direct-secret ",
+                    auth_token_env="SWORD_VOICE_AGENT_AUTH_TOKEN",
+                ),
+                "direct-secret",
+            )
+
+    def test_resolve_udp_auth_token_rejects_empty_direct_value(self):
+        with self.assertRaises(ValueError):
+            resolve_udp_auth_token(auth_token=" ", auth_token_env="SWORD_VOICE_AGENT_AUTH_TOKEN")
 
     def test_safe_model_error_does_not_return_internal_paths(self):
         self.assertEqual(
@@ -242,6 +276,8 @@ class PublishUdpDebugTests(unittest.TestCase):
         self.assertIn("GestureState", titles)
         self.assertIn("GestureStatus", titles)
         self.assertIn("GestureHeartbeat", titles)
+        for item in schema["oneOf"]:
+            self.assertIn("auth_token", item["properties"])
 
 
 if __name__ == "__main__":

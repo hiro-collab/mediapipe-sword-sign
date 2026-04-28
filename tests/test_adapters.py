@@ -83,6 +83,39 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(address, ("127.0.0.1", 9999))
         self.assertEqual(json.loads(payload.decode("utf-8"))["status"], "sending")
 
+    def test_udp_publisher_attaches_auth_token_to_state_payload(self):
+        fake_socket = FakeSocket()
+        publisher = UdpGesturePublisher(
+            "127.0.0.1",
+            9999,
+            sock=fake_socket,
+            auth_token="secret-token",
+        )
+
+        publisher.publish(make_state())
+
+        payload, address = fake_socket.sent[0]
+        decoded = json.loads(payload.decode("utf-8"))
+        self.assertEqual(address, ("127.0.0.1", 9999))
+        self.assertEqual(decoded["primary"], "sword_sign")
+        self.assertEqual(decoded["auth_token"], "secret-token")
+
+    def test_udp_publisher_attaches_auth_token_to_generic_payload(self):
+        fake_socket = FakeSocket()
+        publisher = UdpGesturePublisher(
+            "127.0.0.1",
+            9999,
+            sock=fake_socket,
+            auth_token="secret-token",
+        )
+
+        publisher.publish_payload({"type": "gesture_heartbeat", "status": "sending"})
+
+        payload, address = fake_socket.sent[0]
+        decoded = json.loads(payload.decode("utf-8"))
+        self.assertEqual(address, ("127.0.0.1", 9999))
+        self.assertEqual(decoded["auth_token"], "secret-token")
+
     def test_websocket_broadcaster_sends_to_connected_clients(self):
         async def run():
             client = FakeWebSocketClient()

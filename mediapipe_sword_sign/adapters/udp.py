@@ -16,10 +16,12 @@ class UdpGesturePublisher:
         *,
         encoding: str = "utf-8",
         sock: socket.socket | None = None,
+        auth_token: str | None = None,
     ) -> None:
         self.host = host
         self.port = int(port)
         self.encoding = encoding
+        self.auth_token = auth_token
         self._sock = sock or socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._owns_socket = sock is None
 
@@ -27,14 +29,35 @@ class UdpGesturePublisher:
     def address(self) -> tuple[str, int]:
         return (self.host, self.port)
 
+    def _payload_with_auth(self, payload: Mapping[str, object]) -> dict[str, object]:
+        udp_payload = dict(payload)
+        if self.auth_token:
+            udp_payload["auth_token"] = self.auth_token
+        return udp_payload
+
     def publish_payload(self, payload: Mapping[str, object]) -> None:
         self._sock.sendto(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(self.encoding),
+            json.dumps(
+                self._payload_with_auth(payload),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode(self.encoding),
             self.address,
         )
 
     def publish(self, state: GestureState) -> None:
-        self._sock.sendto(state.to_json().encode(self.encoding), self.address)
+        if not self.auth_token:
+            self._sock.sendto(state.to_json().encode(self.encoding), self.address)
+            return
+
+        self._sock.sendto(
+            json.dumps(
+                self._payload_with_auth(state.to_dict()),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode(self.encoding),
+            self.address,
+        )
 
     def close(self) -> None:
         if self._owns_socket:
