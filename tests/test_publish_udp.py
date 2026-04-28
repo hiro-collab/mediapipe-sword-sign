@@ -7,13 +7,19 @@ from apps.publish_udp import (
     format_debug_summary,
     heartbeat_payload,
     parse_debug_every,
+    parse_camera_scan_limit,
     parse_optional_interval,
+    parse_port,
+    parse_threshold,
     runtime_metadata,
+    safe_model_error,
     schema_payload,
     should_print_debug,
     state_with_runtime_metadata,
     status_payload,
+    validate_runtime_args,
 )
+from mediapipe_sword_sign.model_loader import UnsafeModelError
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
 
@@ -62,6 +68,42 @@ class PublishUdpDebugTests(unittest.TestCase):
         self.assertIsNone(parse_optional_interval("off"))
         self.assertIsNone(parse_optional_interval("0"))
         self.assertEqual(parse_optional_interval("5s"), DebugEvery(5.0, "seconds"))
+
+    def test_parse_port_rejects_out_of_range_values(self):
+        self.assertEqual(parse_port("8765"), 8765)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_port("0")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_port("65536")
+
+    def test_parse_camera_scan_limit_is_bounded(self):
+        self.assertEqual(parse_camera_scan_limit("5"), 5)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_camera_scan_limit("17")
+
+    def test_parse_threshold_is_probability(self):
+        self.assertEqual(parse_threshold("0.9"), 0.9)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_threshold("-0.1")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_threshold("1.1")
+
+    def test_validate_runtime_args_requires_remote_udp_opt_in(self):
+        validate_runtime_args(argparse.Namespace(host="127.0.0.1", allow_remote_udp=False))
+        validate_runtime_args(argparse.Namespace(host="192.0.2.10", allow_remote_udp=True))
+
+        with self.assertRaises(ValueError):
+            validate_runtime_args(argparse.Namespace(host="192.0.2.10", allow_remote_udp=False))
+
+    def test_safe_model_error_does_not_return_internal_paths(self):
+        self.assertEqual(
+            safe_model_error(FileNotFoundError("model file not found: C:/secret/model.pkl")),
+            "model_not_found",
+        )
+        self.assertEqual(
+            safe_model_error(UnsafeModelError("refusing C:/secret/model.pkl")),
+            "unsafe_model",
+        )
 
     def test_fps_tracker_updates_from_elapsed_time(self):
         tracker = FpsTracker()

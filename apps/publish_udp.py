@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mediapipe_sword_sign import SwordSignDetector
+from mediapipe_sword_sign import SwordSignDetector, UnsafeModelError
 from mediapipe_sword_sign.adapters import UdpGesturePublisher
 from mediapipe_sword_sign.types import GestureState
 
@@ -27,6 +27,8 @@ PACKAGE_NAME = "mediapipe-sword-sign"
 SOURCE_NAME = "mediapipe_sword_sign"
 PREVIEW_WINDOW = "Gesture UDP Preview"
 DEFAULT_CAMERA_SCAN_LIMIT = 5
+MAX_CAMERA_SCAN_LIMIT = 16
+LOCAL_UDP_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,72 @@ def parse_optional_interval(value: str) -> DebugEvery | None:
     if text in {"0", "off", "none", "disabled"}:
         return None
     return parse_debug_every(value)
+
+
+def parse_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("--port must be between 1 and 65535")
+    return port
+
+
+def parse_non_negative_int(value: str, *, name: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"{name} must be 0 or greater")
+    return parsed
+
+
+def parse_camera_scan_limit(value: str) -> int:
+    parsed = parse_non_negative_int(value, name="--camera-scan-limit")
+    if parsed > MAX_CAMERA_SCAN_LIMIT:
+        raise argparse.ArgumentTypeError(
+            f"--camera-scan-limit must be {MAX_CAMERA_SCAN_LIMIT} or lower"
+        )
+    return parsed
+
+
+def parse_non_negative_float(value: str, *, name: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be a number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"{name} must be 0 or greater")
+    return parsed
+
+
+def parse_threshold(value: str) -> float:
+    parsed = parse_non_negative_float(value, name="--threshold")
+    if parsed > 1:
+        raise argparse.ArgumentTypeError("--threshold must be between 0 and 1")
+    return parsed
+
+
+def parse_interval(value: str) -> float:
+    return parse_non_negative_float(value, name="--interval")
+
+
+def parse_camera_index(value: str) -> int:
+    return parse_non_negative_int(value, name="--camera-index")
+
+
+def is_local_udp_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in LOCAL_UDP_HOSTS or normalized.startswith("127.")
+
+
+def validate_runtime_args(args: argparse.Namespace) -> None:
+    if not is_local_udp_host(args.host) and not args.allow_remote_udp:
+        raise ValueError(
+            "refusing to send gesture UDP to a non-local host without --allow-remote-udp"
+        )
 
 
 def format_bool(value: bool) -> str:
@@ -212,8 +280,16 @@ def check_model(args: argparse.Namespace) -> dict[str, object]:
         )
         detector.close()
     except Exception as exc:
-        return {"available": False, "error": str(exc)}
+        return {"available": False, "error": safe_model_error(exc)}
     return {"available": True}
+
+
+def safe_model_error(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "model_not_found"
+    if isinstance(exc, UnsafeModelError):
+        return "unsafe_model"
+    return "model_load_failed"
 
 
 def health_payload(args: argparse.Namespace) -> dict[str, object]:
@@ -426,19 +502,24 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {get_version()}",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--camera-index", type=int, default=0)
+    parser.add_argument("--port", type=parse_port, default=8765)
+    parser.add_argument("--camera-index", type=parse_camera_index, default=0)
     parser.add_argument(
         "--camera-scan-limit",
-        type=int,
+        type=parse_camera_scan_limit,
         default=DEFAULT_CAMERA_SCAN_LIMIT,
         help="highest camera index to probe for --list-cameras",
     )
-    parser.add_argument("--threshold", type=float, default=0.9)
+    parser.add_argument("--threshold", type=parse_threshold, default=0.9)
     parser.add_argument("--model-path")
     parser.add_argument("--model-sha256")
     parser.add_argument("--allow-untrusted-model", action="store_true")
-    parser.add_argument("--interval", type=float, default=0.0)
+    parser.add_argument("--interval", type=parse_interval, default=0.0)
+    parser.add_argument(
+        "--allow-remote-udp",
+        action="store_true",
+        help="allow sending gesture state UDP packets to a non-local host",
+    )
     parser.add_argument("--print-json", action="store_true")
     parser.add_argument("--debug", action="store_true", help="print one-line state summaries")
     parser.add_argument(
@@ -500,7 +581,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
     if args.suppress_protobuf_warnings:
         suppress_protobuf_deprecation_warnings()
 
@@ -516,6 +598,11 @@ def main() -> int:
             )
         )
         return 0
+
+    try:
+        validate_runtime_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.health_json or args.dry_run:
         payload = health_payload(args)

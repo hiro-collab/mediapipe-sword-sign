@@ -5,10 +5,10 @@ description = "MediaPipe-based sword sign gesture recognition module"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "joblib>=1.5.2",
+    "joblib==1.5.3",
     "mediapipe==0.10.14",
-    "opencv-python>=4.13.0.92",
-    "pandas>=3.0.2",
-    "scikit-learn>=1.8.0",
-    "websockets>=13.1",
+    "opencv-python==4.13.0.92",
+    "pandas==3.0.2",
+    "scikit-learn==1.8.0",
+    "websockets==16.0",
 ]

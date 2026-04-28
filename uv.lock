@@ -525,12 +525,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "joblib", specifier = ">=1.5.2" },
+    { name = "joblib", specifier = "==1.5.3" },
     { name = "mediapipe", specifier = "==0.10.14" },
-    { name = "opencv-python", specifier = ">=4.13.0.92" },
-    { name = "pandas", specifier = ">=3.0.2" },
-    { name = "scikit-learn", specifier = ">=1.8.0" },
-    { name = "websockets", specifier = ">=13.1" },
+    { name = "opencv-python", specifier = "==4.13.0.92" },
+    { name = "pandas", specifier = "==3.0.2" },
+    { name = "scikit-learn", specifier = "==1.8.0" },
+    { name = "websockets", specifier = "==16.0" },
 ]
 
 [[package]]
