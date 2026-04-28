@@ -161,6 +161,25 @@ UDPで `GestureState` JSONを送る場合:
 uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --print-json
 ```
 
+`apps/publish_udp.py` はデフォルトではGUIを出さず、UDP送信だけを行います。
+カメラ入力、手検出、分類信頼度、UDP送信先を1行サマリで確認したい場合は `--debug` を指定します。
+`--debug-every 30` は30フレームごと、`--debug-every 2s` は2秒ごとに表示します。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-every 30
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-every 2s
+```
+
+OpenCVのプレビューウィンドウが必要な場合だけ `--preview` を指定します。
+プレビューには `primary`、`sword confidence`、`hand detected`、UDP送信先をoverlay表示します。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --preview --debug
+```
+
+MediaPipe経由でprotobufのdeprecation warningが通常ログに混ざる場合は、必要なときだけ
+`--suppress-protobuf-warnings` を追加してください。デフォルトではwarningの扱いを変更しません。
+
 WebSocketで接続中のクライアントへbroadcastする場合:
 
 ```bash
