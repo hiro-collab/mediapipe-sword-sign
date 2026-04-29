@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import tomllib
+import uuid
 import warnings
 from dataclasses import dataclass, replace
 from functools import cache
@@ -21,7 +22,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from mediapipe_sword_sign import SwordSignDetector, UnsafeModelError
 from mediapipe_sword_sign.adapters import UdpGesturePublisher
-from mediapipe_sword_sign.types import GestureState
+from mediapipe_sword_sign.temporal import GestureHoldState, GestureHoldTracker
+from mediapipe_sword_sign.types import GESTURE_SWORD_SIGN, GESTURE_VICTORY, GestureState
 
 
 PACKAGE_NAME = "mediapipe-sword-sign"
@@ -31,6 +33,35 @@ DEFAULT_CAMERA_SCAN_LIMIT = 5
 MAX_CAMERA_SCAN_LIMIT = 16
 LOCAL_UDP_HOSTS = {"127.0.0.1", "localhost", "::1"}
 UDP_AUTH_TOKEN_ENV = "SWORD_VOICE_AGENT_AUTH_TOKEN"
+DEFAULT_THRESHOLD = 0.9
+DEFAULT_HOLD_SECONDS = 0.5
+DEFAULT_RELEASE_GRACE_SECONDS = 0.1
+LOW_LATENCY_THRESHOLD = 0.8
+LOW_LATENCY_HOLD_SECONDS = 0.1
+LOW_LATENCY_RELEASE_GRACE_SECONDS = 0.05
+EDGE_GESTURE_ACTIVE = "gesture_active"
+EDGE_GESTURE_RELEASED = "gesture_released"
+
+
+@dataclass(frozen=True)
+class LatencyProfile:
+    threshold: float
+    hold_seconds: float
+    release_grace_seconds: float
+
+
+LATENCY_PROFILES: dict[str, LatencyProfile] = {
+    "default": LatencyProfile(
+        threshold=DEFAULT_THRESHOLD,
+        hold_seconds=DEFAULT_HOLD_SECONDS,
+        release_grace_seconds=DEFAULT_RELEASE_GRACE_SECONDS,
+    ),
+    "low": LatencyProfile(
+        threshold=LOW_LATENCY_THRESHOLD,
+        hold_seconds=LOW_LATENCY_HOLD_SECONDS,
+        release_grace_seconds=LOW_LATENCY_RELEASE_GRACE_SECONDS,
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -176,6 +207,17 @@ def validate_runtime_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "refusing to send gesture UDP to a non-local host without --allow-remote-udp"
         )
+
+
+def apply_latency_profile(args: argparse.Namespace) -> argparse.Namespace:
+    profile = LATENCY_PROFILES[args.latency_profile]
+    if args.threshold is None:
+        args.threshold = profile.threshold
+    if args.hold_seconds is None:
+        args.hold_seconds = profile.hold_seconds
+    if args.release_grace_seconds is None:
+        args.release_grace_seconds = profile.release_grace_seconds
+    return args
 
 
 def resolve_udp_auth_token(
@@ -331,6 +373,13 @@ def health_payload(args: argparse.Namespace) -> dict[str, object]:
             "available": bool(camera["available"]),
         },
         "model": model,
+        "gesture": {
+            "latency_profile": args.latency_profile,
+            "target": args.target_gesture,
+            "threshold": args.threshold,
+            "hold_seconds": args.hold_seconds,
+            "release_grace_seconds": args.release_grace_seconds,
+        },
         "udp": destination_payload((args.host, args.port)),
     }
 
@@ -340,13 +389,25 @@ def runtime_metadata(
     *,
     frame_number: int,
     fps: float,
+    target_gesture: str = GESTURE_SWORD_SIGN,
+    turn_id: str | None = None,
+    detected_at_monotonic: float | None = None,
 ) -> dict[str, object]:
-    return {
+    target = state.gesture(target_gesture)
+    metadata: dict[str, object] = {
         "frame_id": frame_number,
+        "detected_at": float(state.timestamp),
         "hand_detected": bool(state.hand_detected),
         "primary_gesture": state.primary,
+        "target_gesture": target_gesture,
+        "confidence": float(target.confidence),
         "fps": round(fps, 3),
     }
+    if detected_at_monotonic is not None:
+        metadata["detected_at_monotonic"] = float(detected_at_monotonic)
+    if turn_id is not None:
+        metadata["turn_id"] = turn_id
+    return metadata
 
 
 def state_with_runtime_metadata(
@@ -354,10 +415,136 @@ def state_with_runtime_metadata(
     *,
     frame_number: int,
     fps: float,
+    target_gesture: str = GESTURE_SWORD_SIGN,
+    turn_id: str | None = None,
+    detected_at_monotonic: float | None = None,
 ) -> GestureState:
     metadata = dict(state.metadata or {})
-    metadata.update(runtime_metadata(state, frame_number=frame_number, fps=fps))
+    metadata.update(
+        runtime_metadata(
+            state,
+            frame_number=frame_number,
+            fps=fps,
+            target_gesture=target_gesture,
+            turn_id=turn_id,
+            detected_at_monotonic=detected_at_monotonic,
+        )
+    )
     return replace(state, metadata=metadata)
+
+
+def transport_payload_fields(
+    state: GestureState,
+    *,
+    frame_number: int,
+    fps: float,
+    target_gesture: str = GESTURE_SWORD_SIGN,
+    turn_id: str | None = None,
+    detected_at_monotonic: float | None = None,
+    sent_at: float | None = None,
+    sent_at_monotonic: float | None = None,
+) -> dict[str, object]:
+    fields = runtime_metadata(
+        state,
+        frame_number=frame_number,
+        fps=fps,
+        target_gesture=target_gesture,
+        turn_id=turn_id,
+        detected_at_monotonic=detected_at_monotonic,
+    )
+    fields["sent_at"] = time.time() if sent_at is None else float(sent_at)
+    fields["sent_at_monotonic"] = (
+        time.monotonic() if sent_at_monotonic is None else float(sent_at_monotonic)
+    )
+    return fields
+
+
+def gesture_state_payload(
+    state: GestureState,
+    *,
+    frame_number: int,
+    fps: float,
+    target_gesture: str = GESTURE_SWORD_SIGN,
+    turn_id: str | None = None,
+    detected_at_monotonic: float | None = None,
+    sent_at: float | None = None,
+    sent_at_monotonic: float | None = None,
+) -> dict[str, object]:
+    payload = state.to_dict()
+    payload.update(
+        transport_payload_fields(
+            state,
+            frame_number=frame_number,
+            fps=fps,
+            target_gesture=target_gesture,
+            turn_id=turn_id,
+            detected_at_monotonic=detected_at_monotonic,
+            sent_at=sent_at,
+            sent_at_monotonic=sent_at_monotonic,
+        )
+    )
+    return payload
+
+
+def new_turn_id() -> str:
+    return f"turn_{uuid.uuid4().hex}"
+
+
+def edge_event_name(hold: GestureHoldState) -> str | None:
+    if hold.activated:
+        return EDGE_GESTURE_ACTIVE
+    if hold.released:
+        return EDGE_GESTURE_RELEASED
+    return None
+
+
+def gesture_edge_payload(
+    state: GestureState,
+    hold: GestureHoldState,
+    *,
+    turn_id: str,
+    frame_number: int,
+    camera_index: int,
+    destination: tuple[str, int],
+    fps: float,
+    detected_at_monotonic: float | None = None,
+    sent_at: float | None = None,
+    sent_at_monotonic: float | None = None,
+) -> dict[str, object]:
+    event = edge_event_name(hold)
+    if event is None:
+        raise ValueError("hold state does not represent an edge event")
+
+    payload = {
+        "type": "gesture_edge",
+        "event": event,
+        "source": SOURCE_NAME,
+        "timestamp": float(state.timestamp),
+        "status": "active" if hold.active else "released",
+        "turn_id": turn_id,
+        "camera": {
+            "selected_index": camera_index,
+            "opened": True,
+        },
+        "udp": destination_payload(destination),
+        "target_gesture": hold.target,
+        "current_active": bool(hold.current_active),
+        "stable_active": bool(hold.active),
+        "held_for": float(hold.held_for),
+    }
+    payload.update(
+        transport_payload_fields(
+            state,
+            frame_number=frame_number,
+            fps=fps,
+            target_gesture=hold.target,
+            turn_id=turn_id,
+            detected_at_monotonic=detected_at_monotonic,
+            sent_at=sent_at,
+            sent_at_monotonic=sent_at_monotonic,
+        )
+    )
+    return payload
 
 
 def status_payload(
@@ -367,9 +554,15 @@ def status_payload(
     camera_index: int,
     destination: tuple[str, int],
     fps: float,
+    latency_profile: str = "default",
+    target_gesture: str = GESTURE_SWORD_SIGN,
+    threshold: float = DEFAULT_THRESHOLD,
+    hold_seconds: float = DEFAULT_HOLD_SECONDS,
+    release_grace_seconds: float = DEFAULT_RELEASE_GRACE_SECONDS,
 ) -> dict[str, object]:
     best_name, best_confidence = best_gesture_snapshot(state)
     sword = state.sword_sign
+    target = state.gesture(target_gesture)
     return {
         "type": "gesture_status",
         "source": SOURCE_NAME,
@@ -387,6 +580,14 @@ def status_payload(
         "sword_sign": {
             "active": bool(sword.active),
             "confidence": float(sword.confidence),
+        },
+        "gesture": {
+            "latency_profile": latency_profile,
+            "target": target_gesture,
+            "threshold": threshold,
+            "confidence": float(target.confidence),
+            "hold_seconds": hold_seconds,
+            "release_grace_seconds": release_grace_seconds,
         },
         "best_gesture": {
             "name": best_name,
@@ -426,7 +627,19 @@ def schema_payload() -> dict[str, object]:
             {
                 "title": "GestureState",
                 "type": "object",
-                "required": ["type", "timestamp", "source", "hand_detected", "primary", "gestures"],
+                "required": [
+                    "type",
+                    "timestamp",
+                    "source",
+                    "hand_detected",
+                    "primary",
+                    "gestures",
+                    "frame_id",
+                    "detected_at",
+                    "sent_at",
+                    "fps",
+                    "confidence",
+                ],
                 "properties": {
                     "type": {"const": "gesture_state"},
                     "timestamp": {"type": "number"},
@@ -435,15 +648,59 @@ def schema_payload() -> dict[str, object]:
                     "hand_detected": {"type": "boolean"},
                     "primary": {"type": ["string", "null"]},
                     "gestures": {"type": "object"},
+                    "frame_id": {"type": "integer"},
+                    "detected_at": {"type": "number"},
+                    "detected_at_monotonic": {"type": "number"},
+                    "sent_at": {"type": "number"},
+                    "sent_at_monotonic": {"type": "number"},
+                    "fps": {"type": "number"},
+                    "confidence": {"type": "number"},
+                    "turn_id": {"type": "string"},
                     "metadata": {
                         "type": "object",
                         "properties": {
                             "frame_id": {"type": "integer"},
+                            "detected_at": {"type": "number"},
+                            "detected_at_monotonic": {"type": "number"},
                             "hand_detected": {"type": "boolean"},
                             "primary_gesture": {"type": ["string", "null"]},
+                            "target_gesture": {"type": "string"},
+                            "confidence": {"type": "number"},
                             "fps": {"type": "number"},
+                            "turn_id": {"type": "string"},
                         },
                     },
+                },
+            },
+            {
+                "title": "GestureEdge",
+                "type": "object",
+                "required": [
+                    "type",
+                    "event",
+                    "turn_id",
+                    "frame_id",
+                    "detected_at",
+                    "sent_at",
+                    "fps",
+                    "confidence",
+                ],
+                "properties": {
+                    "type": {"const": "gesture_edge"},
+                    "event": {"enum": [EDGE_GESTURE_ACTIVE, EDGE_GESTURE_RELEASED]},
+                    "auth_token": {"type": "string"},
+                    "turn_id": {"type": "string"},
+                    "target_gesture": {"type": "string"},
+                    "current_active": {"type": "boolean"},
+                    "stable_active": {"type": "boolean"},
+                    "held_for": {"type": "number"},
+                    "frame_id": {"type": "integer"},
+                    "detected_at": {"type": "number"},
+                    "detected_at_monotonic": {"type": "number"},
+                    "sent_at": {"type": "number"},
+                    "sent_at_monotonic": {"type": "number"},
+                    "fps": {"type": "number"},
+                    "confidence": {"type": "number"},
                 },
             },
             {
@@ -538,7 +795,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CAMERA_SCAN_LIMIT,
         help="highest camera index to probe for --list-cameras",
     )
-    parser.add_argument("--threshold", type=parse_threshold, default=0.9)
+    parser.add_argument(
+        "--latency-profile",
+        choices=sorted(LATENCY_PROFILES),
+        default="default",
+        help="preset for omitted threshold/hold/grace values; explicit arguments override it",
+    )
+    parser.add_argument("--threshold", type=parse_threshold, default=None)
+    parser.add_argument(
+        "--hold-seconds",
+        "--hold",
+        dest="hold_seconds",
+        type=parse_interval,
+        default=None,
+        help="seconds a current-frame gesture must remain active before stable active",
+    )
+    parser.add_argument(
+        "--release-grace-seconds",
+        "--grace",
+        dest="release_grace_seconds",
+        type=parse_interval,
+        default=None,
+        help="seconds to keep stable active through short current-frame gaps",
+    )
+    parser.add_argument(
+        "--target-gesture",
+        choices=[GESTURE_SWORD_SIGN, GESTURE_VICTORY],
+        default=GESTURE_SWORD_SIGN,
+        help="gesture tracked for stable active/released edge events",
+    )
     parser.add_argument("--model-path")
     parser.add_argument("--model-sha256")
     parser.add_argument("--allow-untrusted-model", action="store_true")
@@ -619,7 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = apply_latency_profile(parser.parse_args())
     if args.suppress_protobuf_warnings:
         suppress_protobuf_deprecation_warnings()
 
@@ -656,6 +941,12 @@ def main() -> int:
 
     frame_number = 0
     fps_tracker = FpsTracker()
+    hold_tracker = GestureHoldTracker(
+        target=args.target_gesture,
+        hold_seconds=args.hold_seconds,
+        release_grace_seconds=args.release_grace_seconds,
+    )
+    active_turn_id: str | None = None
     last_debug_at: float | None = None
     last_status_at: float | None = None
     last_heartbeat_at: float | None = None
@@ -671,7 +962,10 @@ def main() -> int:
         ):
             eprint(
                 "selected_camera="
-                f"{args.camera_index} udp={args.host}:{args.port} version={get_version()}"
+                f"{args.camera_index} udp={args.host}:{args.port} version={get_version()} "
+                f"latency_profile={args.latency_profile} threshold={args.threshold:g} "
+                f"hold={args.hold_seconds:g}s grace={args.release_grace_seconds:g}s "
+                f"target={args.target_gesture}"
             )
             eprint(f"udp_sending destination={args.host}:{args.port}")
             if args.heartbeat_every is not None:
@@ -692,22 +986,67 @@ def main() -> int:
                     continue
 
                 frame_number += 1
-                now = time.monotonic()
-                fps = fps_tracker.update(now)
+                frame_read_at = time.monotonic()
+                fps = fps_tracker.update(frame_read_at)
+                detected_state = detector.detect(frame, flip=True)
+                detected_at_monotonic = time.monotonic()
+                hold = hold_tracker.update(detected_state, now=detected_at_monotonic)
+                if hold.activated:
+                    active_turn_id = new_turn_id()
+
+                turn_id = active_turn_id if (hold.active or hold.released) else None
                 state = state_with_runtime_metadata(
-                    detector.detect(frame, flip=True),
+                    detected_state,
                     frame_number=frame_number,
                     fps=fps,
+                    target_gesture=args.target_gesture,
+                    turn_id=turn_id,
+                    detected_at_monotonic=detected_at_monotonic,
                 )
-                publisher.publish(state)
+                state_payload = gesture_state_payload(
+                    state,
+                    frame_number=frame_number,
+                    fps=fps,
+                    target_gesture=args.target_gesture,
+                    turn_id=turn_id,
+                    detected_at_monotonic=detected_at_monotonic,
+                )
+                publisher.publish_payload(state_payload)
                 if args.print_json:
-                    print(state.to_json(), flush=True)
+                    print_json(state_payload)
+
+                if hold.activated or hold.released:
+                    assert turn_id is not None
+                    edge_payload = gesture_edge_payload(
+                        state,
+                        hold,
+                        turn_id=turn_id,
+                        frame_number=frame_number,
+                        camera_index=args.camera_index,
+                        destination=publisher.address,
+                        fps=fps,
+                        detected_at_monotonic=detected_at_monotonic,
+                    )
+                    publisher.publish_payload(edge_payload)
+                    if args.print_json:
+                        print_json(edge_payload)
+                    if args.debug:
+                        eprint(
+                            "edge "
+                            f"event={edge_payload['event']} turn_id={turn_id} "
+                            f"frame_id={frame_number} "
+                            f"detected_at={edge_payload['detected_at']:.6f} "
+                            f"sent_at={edge_payload['sent_at']:.6f} "
+                            f"confidence={edge_payload['confidence']:.3f}"
+                        )
+                    if hold.released:
+                        active_turn_id = None
 
                 if args.debug and should_print_debug(
                     args.debug_every,
                     frame_number=frame_number,
                     last_debug_at=last_debug_at,
-                    now=now,
+                    now=detected_at_monotonic,
                 ):
                     print(
                         format_debug_summary(
@@ -718,13 +1057,13 @@ def main() -> int:
                         ),
                         flush=True,
                     )
-                    last_debug_at = now
+                    last_debug_at = detected_at_monotonic
 
                 if args.status_json and should_print_debug(
                     args.status_every,
                     frame_number=frame_number,
                     last_debug_at=last_status_at,
-                    now=now,
+                    now=detected_at_monotonic,
                 ):
                     print_json(
                         status_payload(
@@ -733,15 +1072,20 @@ def main() -> int:
                             camera_index=args.camera_index,
                             destination=publisher.address,
                             fps=fps,
+                            latency_profile=args.latency_profile,
+                            target_gesture=args.target_gesture,
+                            threshold=args.threshold,
+                            hold_seconds=args.hold_seconds,
+                            release_grace_seconds=args.release_grace_seconds,
                         )
                     )
-                    last_status_at = now
+                    last_status_at = detected_at_monotonic
 
                 if args.heartbeat_every is not None and should_print_debug(
                     args.heartbeat_every,
                     frame_number=frame_number,
                     last_debug_at=last_heartbeat_at,
-                    now=now,
+                    now=detected_at_monotonic,
                 ):
                     publisher.publish_payload(
                         heartbeat_payload(
@@ -751,7 +1095,7 @@ def main() -> int:
                             fps=fps,
                         )
                     )
-                    last_heartbeat_at = now
+                    last_heartbeat_at = detected_at_monotonic
 
                 if args.preview:
                     display = cv2.flip(frame, 1)

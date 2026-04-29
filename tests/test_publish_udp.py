@@ -4,8 +4,14 @@ from unittest import mock
 
 from apps.publish_udp import (
     DebugEvery,
+    EDGE_GESTURE_ACTIVE,
+    EDGE_GESTURE_RELEASED,
     FpsTracker,
+    apply_latency_profile,
+    edge_event_name,
     format_debug_summary,
+    gesture_edge_payload,
+    gesture_state_payload,
     heartbeat_payload,
     parse_debug_every,
     parse_camera_scan_limit,
@@ -22,6 +28,7 @@ from apps.publish_udp import (
     validate_runtime_args,
 )
 from mediapipe_sword_sign.model_loader import UnsafeModelError
+from mediapipe_sword_sign.temporal import GestureHoldState
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
 
@@ -89,6 +96,34 @@ class PublishUdpDebugTests(unittest.TestCase):
             parse_threshold("-0.1")
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_threshold("1.1")
+
+    def test_apply_latency_profile_fills_omitted_timing_values(self):
+        args = apply_latency_profile(
+            argparse.Namespace(
+                latency_profile="low",
+                threshold=None,
+                hold_seconds=None,
+                release_grace_seconds=None,
+            )
+        )
+
+        self.assertEqual(args.threshold, 0.8)
+        self.assertEqual(args.hold_seconds, 0.1)
+        self.assertEqual(args.release_grace_seconds, 0.05)
+
+    def test_apply_latency_profile_keeps_explicit_values(self):
+        args = apply_latency_profile(
+            argparse.Namespace(
+                latency_profile="low",
+                threshold=0.91,
+                hold_seconds=0.25,
+                release_grace_seconds=0.2,
+            )
+        )
+
+        self.assertEqual(args.threshold, 0.91)
+        self.assertEqual(args.hold_seconds, 0.25)
+        self.assertEqual(args.release_grace_seconds, 0.2)
 
     def test_validate_runtime_args_requires_remote_udp_opt_in(self):
         validate_runtime_args(argparse.Namespace(host="127.0.0.1", allow_remote_udp=False))
@@ -234,12 +269,87 @@ class PublishUdpDebugTests(unittest.TestCase):
             state.metadata,
             {
                 "frame_id": 12,
+                "detected_at": 123.0,
                 "hand_detected": True,
                 "primary_gesture": None,
+                "target_gesture": "sword_sign",
+                "confidence": 0.42,
                 "fps": 29.988,
             },
         )
         self.assertEqual(runtime_metadata(make_state(), frame_number=1, fps=2.0)["fps"], 2.0)
+
+    def test_state_transport_payload_includes_latency_measurement_fields(self):
+        payload = gesture_state_payload(
+            make_state(),
+            frame_number=12,
+            fps=29.9876,
+            target_gesture="victory",
+            turn_id="turn-test",
+            detected_at_monotonic=456.0,
+            sent_at=124.0,
+            sent_at_monotonic=457.0,
+        )
+
+        self.assertEqual(payload["type"], "gesture_state")
+        self.assertEqual(payload["frame_id"], 12)
+        self.assertEqual(payload["detected_at"], 123.0)
+        self.assertEqual(payload["detected_at_monotonic"], 456.0)
+        self.assertEqual(payload["sent_at"], 124.0)
+        self.assertEqual(payload["sent_at_monotonic"], 457.0)
+        self.assertEqual(payload["fps"], 29.988)
+        self.assertEqual(payload["target_gesture"], "victory")
+        self.assertEqual(payload["confidence"], 0.84)
+        self.assertEqual(payload["turn_id"], "turn-test")
+
+    def test_edge_payload_reports_stable_active_event(self):
+        hold = GestureHoldState(
+            target="sword_sign",
+            current_active=True,
+            active=True,
+            changed=True,
+            activated=True,
+            released=False,
+            held_for=0.1,
+            confidence=0.92,
+        )
+
+        payload = gesture_edge_payload(
+            make_state(),
+            hold,
+            turn_id="turn-test",
+            frame_number=13,
+            camera_index=0,
+            destination=("127.0.0.1", 8765),
+            fps=30.0,
+            detected_at_monotonic=456.0,
+            sent_at=124.0,
+            sent_at_monotonic=457.0,
+        )
+
+        self.assertEqual(edge_event_name(hold), EDGE_GESTURE_ACTIVE)
+        self.assertEqual(payload["type"], "gesture_edge")
+        self.assertEqual(payload["event"], EDGE_GESTURE_ACTIVE)
+        self.assertEqual(payload["turn_id"], "turn-test")
+        self.assertTrue(payload["stable_active"])
+        self.assertEqual(payload["frame_id"], 13)
+        self.assertEqual(payload["detected_at"], 123.0)
+        self.assertEqual(payload["sent_at"], 124.0)
+        self.assertEqual(payload["confidence"], 0.42)
+
+    def test_edge_event_name_reports_release(self):
+        hold = GestureHoldState(
+            target="sword_sign",
+            current_active=False,
+            active=False,
+            changed=True,
+            activated=False,
+            released=True,
+            held_for=0.0,
+            confidence=0.1,
+        )
+
+        self.assertEqual(edge_event_name(hold), EDGE_GESTURE_RELEASED)
 
     def test_status_payload_includes_runtime_fields(self):
         payload = status_payload(
@@ -256,6 +366,7 @@ class PublishUdpDebugTests(unittest.TestCase):
         self.assertEqual(payload["frame_id"], 42)
         self.assertEqual(payload["best_gesture"]["name"], "victory")
         self.assertEqual(payload["fps"], 30.0)
+        self.assertEqual(payload["gesture"]["threshold"], 0.9)
 
     def test_heartbeat_payload_reports_sending_destination(self):
         payload = heartbeat_payload(

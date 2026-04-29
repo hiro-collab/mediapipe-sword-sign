@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-04-29 - Gesture latency instrumentation
+
+モジュール利用側からの遅延計測依頼に合わせ、`mediapipe-sword-sign` 側で検出からUDP送信までを追えるpayloadにしました。
+
+- `apps/publish_udp.py`
+  - UDPの `gesture_state` payloadへ `frame_id`、`detected_at`、`sent_at`、`fps`、`confidence` をtop-levelで追加。
+  - 同じpayloadへ `detected_at_monotonic`、`sent_at_monotonic`、`target_gesture`、stable active中の `turn_id` も追加。
+  - `GestureHoldTracker` をUDP publisherでも使い、stable active/released の `gesture_edge` payloadを追加送信。
+  - `--hold` / `--hold-seconds`、`--grace` / `--release-grace-seconds`、`--target-gesture` を追加。
+  - `--latency-profile low` を追加し、未指定時の `threshold=0.8`、`hold=0.1s`、`grace=0.05s` をまとめて選べるように変更。
+  - `--schema-json` と `--health-json` に新しい計測・profile項目を反映。
+- `tests/test_publish_udp.py`
+  - profile解決、UDP送信用payload、edge event payloadの回帰テストを追加。
+- `README.md`
+  - 低遅延profile、edge event、receiver側で見るべき到達遅延の計算方法を追記。
+
+確認済み:
+
+```text
+uv run python -m unittest discover -s tests
+Ran 50 tests ... OK
+```
+
 ## 2026-04-28 - UDP auth token support
 
 モジュール利用側からの指摘を受け、`sword-voice-agent` など認証付きUDP receiverと安全に連携しやすいようにしました。

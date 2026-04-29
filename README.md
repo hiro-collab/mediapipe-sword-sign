@@ -189,6 +189,14 @@ uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-e
 uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --debug --debug-every 2s
 ```
 
+録音開始までの遅延を詰める検証では、`--latency-profile low` を指定すると `threshold=0.8`、
+`hold=0.1s`、`grace=0.05s` を既定値として使います。誤検出とのバランスを見る場合は、presetを使ったまま個別値だけ上書きできます。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --latency-profile low --debug
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --latency-profile low --threshold 0.86 --hold 0.15 --grace 0.05
+```
+
 OpenCVのプレビューウィンドウが必要な場合だけ `--preview` を指定します。
 プレビューには `primary`、`sword confidence`、`hand detected`、UDP送信先をoverlay表示します。
 
@@ -228,7 +236,17 @@ uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --heartbeat-every
 ```
 
 通常の `GestureState` payloadには、送信アダプタが汎用 `metadata` を追加します。
-現在は `frame_id`、`hand_detected`、`primary_gesture`、`fps` を含みます。
+UDP送信時のpayloadには top-level と `metadata` の両方に `frame_id`、`detected_at`、
+`detected_at_monotonic`、`fps`、`confidence`、`target_gesture` を含めます。
+送信直前には top-level に `sent_at` と `sent_at_monotonic` も入ります。
+受信側は到達時刻を `received_at` としてログに出せば、`received_at - detected_at` と
+`received_at - sent_at` でジェスチャー検出からreceiver到達までの遅延を確認できます。
+`*_monotonic` は送信プロセス内の順序確認用なので、別プロセスの到達差分はwall time側で見てください。
+
+`--hold` / `--grace` で指定した stable 判定が切り替わった瞬間だけ、追加で `gesture_edge`
+payloadを送ります。`event` は `gesture_active` または `gesture_released` で、stable active中は
+同じ `turn_id` を通常の `gesture_state` と edge payload に付与します。
+`--print-json` を使うと、UDPへ送る通常payloadとedge payloadを同じJSON Lines形式で確認できます。
 起動時は選択カメラとUDP送信先をstderrに短く表示し、終了時は `stopped` をstderrに出します。
 ログ、`--print-json`、`--status-json` にはtokenやAPI keyなどの秘密情報を出さない方針です。
 
