@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-04-29 - Latency output redaction hardening
+
+latency instrumentation追加後のセキュリティ再確認として、stdout/debugへ出る実行時識別子と時刻情報の扱いを安全側に寄せました。
+
+- `apps/publish_udp.py`
+  - `--redact-output` を追加し、`--print-json` / `--status-json` の `turn_id`、token系field、wall time、monotonic timeを伏せられるように変更。
+  - `--debug` のedge行は、既定で `turn_id` や絶対時刻を出さず、`pipeline_ms` と `confidence` だけを表示するように変更。
+  - UDP receiverへ送るpayloadは変更せず、redactionはstdout/debug出力だけに限定。
+- `tests/test_publish_udp.py`
+  - redaction対象fieldとedge debug出力の回帰テストを追加。
+- `README.md`
+  - 共有ログや画面共有時の `--redact-output` 利用方針を追記。
+
 ## 2026-04-29 - Gesture latency instrumentation
 
 モジュール利用側からの遅延計測依頼に合わせ、`mediapipe-sword-sign` 側で検出からUDP送信までを追えるpayloadにしました。

@@ -247,8 +247,16 @@ UDP送信時のpayloadには top-level と `metadata` の両方に `frame_id`、
 payloadを送ります。`event` は `gesture_active` または `gesture_released` で、stable active中は
 同じ `turn_id` を通常の `gesture_state` と edge payload に付与します。
 `--print-json` を使うと、UDPへ送る通常payloadとedge payloadを同じJSON Lines形式で確認できます。
+共有ログや画面共有で `turn_id`、wall time、monotonic timeを出したくない場合は `--redact-output` を併用してください。
+`--redact-output` はstdout/debug出力だけを伏せ、UDP receiverへ送るpayloadは変更しません。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --print-json --redact-output
+```
+
 起動時は選択カメラとUDP送信先をstderrに短く表示し、終了時は `stopped` をstderrに出します。
 ログ、`--print-json`、`--status-json` にはtokenやAPI keyなどの秘密情報を出さない方針です。
+`--debug` のedge行は、既定で `turn_id` や絶対時刻を出さず、検出から送信payload生成までの `pipeline_ms` だけを表示します。
 
 WebSocketで接続中のクライアントへbroadcastする場合:
 

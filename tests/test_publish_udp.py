@@ -10,6 +10,7 @@ from apps.publish_udp import (
     apply_latency_profile,
     edge_event_name,
     format_debug_summary,
+    format_edge_debug_summary,
     gesture_edge_payload,
     gesture_state_payload,
     heartbeat_payload,
@@ -18,6 +19,7 @@ from apps.publish_udp import (
     parse_optional_interval,
     parse_port,
     parse_threshold,
+    redact_output_payload,
     resolve_udp_auth_token,
     runtime_metadata,
     safe_model_error,
@@ -350,6 +352,53 @@ class PublishUdpDebugTests(unittest.TestCase):
         )
 
         self.assertEqual(edge_event_name(hold), EDGE_GESTURE_RELEASED)
+
+    def test_format_edge_debug_summary_omits_runtime_identifiers(self):
+        payload = {
+            "event": EDGE_GESTURE_ACTIVE,
+            "turn_id": "turn-secret",
+            "frame_id": 13,
+            "detected_at": 123.0,
+            "sent_at": 124.0,
+            "detected_at_monotonic": 456.0,
+            "sent_at_monotonic": 456.0125,
+            "confidence": 0.42,
+        }
+
+        summary = format_edge_debug_summary(payload)
+
+        self.assertIn("event=gesture_active", summary)
+        self.assertIn("frame_id=13", summary)
+        self.assertIn("pipeline_ms=12.500", summary)
+        self.assertIn("confidence=0.420", summary)
+        self.assertNotIn("turn-secret", summary)
+        self.assertNotIn("detected_at", summary)
+        self.assertNotIn("sent_at", summary)
+
+    def test_redact_output_payload_removes_tokens_and_runtime_correlation_fields(self):
+        payload = {
+            "auth_token": "secret-token",
+            "turn_id": "turn-secret",
+            "detected_at": 123.0,
+            "sent_at": 124.0,
+            "confidence": 0.42,
+            "metadata": {
+                "turn_id": "turn-secret",
+                "sent_at_monotonic": 456.0,
+                "confidence": 0.42,
+            },
+        }
+
+        redacted = redact_output_payload(payload)
+
+        self.assertEqual(redacted["auth_token"], "[redacted]")
+        self.assertEqual(redacted["turn_id"], "[redacted]")
+        self.assertEqual(redacted["detected_at"], "[redacted]")
+        self.assertEqual(redacted["sent_at"], "[redacted]")
+        self.assertEqual(redacted["confidence"], 0.42)
+        self.assertEqual(redacted["metadata"]["turn_id"], "[redacted]")
+        self.assertEqual(redacted["metadata"]["sent_at_monotonic"], "[redacted]")
+        self.assertEqual(redacted["metadata"]["confidence"], 0.42)
 
     def test_status_payload_includes_runtime_fields(self):
         payload = status_payload(

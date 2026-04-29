@@ -8,11 +8,11 @@ import time
 import tomllib
 import uuid
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import cache
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Mapping
 
 import cv2
 
@@ -41,6 +41,18 @@ LOW_LATENCY_HOLD_SECONDS = 0.1
 LOW_LATENCY_RELEASE_GRACE_SECONDS = 0.05
 EDGE_GESTURE_ACTIVE = "gesture_active"
 EDGE_GESTURE_RELEASED = "gesture_released"
+REDACTED_OUTPUT_VALUE = "[redacted]"
+REDACTED_OUTPUT_KEYS = {
+    "api_key",
+    "auth_token",
+    "detected_at",
+    "detected_at_monotonic",
+    "sent_at",
+    "sent_at_monotonic",
+    "timestamp",
+    "token",
+    "turn_id",
+}
 
 
 @dataclass(frozen=True)
@@ -255,6 +267,37 @@ def print_json(payload: Mapping[str, object]) -> None:
     print(format_json(payload), flush=True)
 
 
+def should_redact_output_key(key: str) -> bool:
+    normalized = key.lower()
+    return (
+        normalized in REDACTED_OUTPUT_KEYS
+        or normalized.endswith("_token")
+        or normalized.endswith("_key")
+    )
+
+
+def redact_output_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return redact_output_payload(value)
+    if isinstance(value, list):
+        return [redact_output_value(item) for item in value]
+    return value
+
+
+def redact_output_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    redacted: dict[str, object] = {}
+    for key, value in payload.items():
+        if should_redact_output_key(str(key)):
+            redacted[key] = REDACTED_OUTPUT_VALUE
+        else:
+            redacted[key] = redact_output_value(value)
+    return redacted
+
+
+def print_output_json(payload: Mapping[str, object], *, redact: bool = False) -> None:
+    print_json(redact_output_payload(payload) if redact else payload)
+
+
 def eprint(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
@@ -294,6 +337,27 @@ def format_debug_summary(
         f"best.confidence={best_confidence:.3f} "
         f"udp={host}:{port}"
     )
+
+
+def format_edge_debug_summary(payload: Mapping[str, object]) -> str:
+    fields = [
+        "edge",
+        f"event={payload.get('event', 'unknown')}",
+        f"frame_id={payload.get('frame_id', 'unknown')}",
+    ]
+    try:
+        pipeline_ms = (
+            float(payload["sent_at_monotonic"]) - float(payload["detected_at_monotonic"])
+        ) * 1000.0
+    except (KeyError, TypeError, ValueError):
+        pipeline_ms = None
+    if pipeline_ms is not None:
+        fields.append(f"pipeline_ms={pipeline_ms:.3f}")
+
+    confidence = payload.get("confidence")
+    if isinstance(confidence, (int, float)):
+        fields.append(f"confidence={float(confidence):.3f}")
+    return " ".join(fields)
 
 
 def should_print_debug(
@@ -856,6 +920,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="print runtime status JSON lines",
     )
     parser.add_argument(
+        "--redact-output",
+        action="store_true",
+        help="redact tokens, turn IDs, and absolute timestamps from stdout/debug output; UDP payloads are unchanged",
+    )
+    parser.add_argument(
         "--status-every",
         type=parse_debug_every,
         default=DebugEvery(1.0, "seconds"),
@@ -1013,7 +1082,7 @@ def main() -> int:
                 )
                 publisher.publish_payload(state_payload)
                 if args.print_json:
-                    print_json(state_payload)
+                    print_output_json(state_payload, redact=args.redact_output)
 
                 if hold.activated or hold.released:
                     assert turn_id is not None
@@ -1029,16 +1098,9 @@ def main() -> int:
                     )
                     publisher.publish_payload(edge_payload)
                     if args.print_json:
-                        print_json(edge_payload)
+                        print_output_json(edge_payload, redact=args.redact_output)
                     if args.debug:
-                        eprint(
-                            "edge "
-                            f"event={edge_payload['event']} turn_id={turn_id} "
-                            f"frame_id={frame_number} "
-                            f"detected_at={edge_payload['detected_at']:.6f} "
-                            f"sent_at={edge_payload['sent_at']:.6f} "
-                            f"confidence={edge_payload['confidence']:.3f}"
-                        )
+                        eprint(format_edge_debug_summary(edge_payload))
                     if hold.released:
                         active_turn_id = None
 
@@ -1065,7 +1127,7 @@ def main() -> int:
                     last_debug_at=last_status_at,
                     now=detected_at_monotonic,
                 ):
-                    print_json(
+                    print_output_json(
                         status_payload(
                             state,
                             frame_number=frame_number,
@@ -1077,7 +1139,8 @@ def main() -> int:
                             threshold=args.threshold,
                             hold_seconds=args.hold_seconds,
                             release_grace_seconds=args.release_grace_seconds,
-                        )
+                        ),
+                        redact=args.redact_output,
                     )
                     last_status_at = detected_at_monotonic
 
