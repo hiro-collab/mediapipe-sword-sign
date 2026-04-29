@@ -219,6 +219,31 @@ uv run python apps/publish_udp.py --check-config --host 127.0.0.1 --port 8765
 
 `--health-json` と `--check-config` のモデルエラーは、内部パスやハッシュ値を出さない短いエラーコードで返します。
 
+統合起動側が残プロセスを安全に扱うため、長時間起動時は `--runtime-status-file` を指定できます。
+起動後に `module`、`pid`、`parent_pid`、`started_at`、UDP送信先の `host` / `port`、
+`health_url`、`shutdown_url` または `shutdown_command`、redact済みの `command_line` をJSONで書きます。
+正常終了時は同じファイルへ `state: "stopped"`、`stopped_at`、`exit_reason` を書きます。削除はしません。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --runtime-status-file .runtime/mediapipe-sword-sign.json
+```
+
+任意で control HTTP を有効化できます。`--control-http-port` はstrict portです。使用中なら別portへ逃げずにエラー終了します。
+`GET /health` は `ok`、`module`、`pid`、`uptime_s`、control HTTP の `host` / `port` を返します。
+`POST /shutdown` は即時killではなくメインループへ停止要求を送り、カメラ、UDP socket、OpenCV windowを通常終了経路で閉じます。
+
+```bash
+uv run python apps/publish_udp.py --host 127.0.0.1 --port 8765 --control-http-port 18765 --runtime-status-file .runtime/mediapipe-sword-sign.json
+```
+
+control HTTPをloopback以外へbindする場合はtokenが必須です。tokenは `Authorization: Bearer ...` または
+`X-Sword-Agent-Token` で渡します。起動引数に直接書く代わりに、通常は `SWORD_AGENT_CONTROL_TOKEN` を使ってください。
+
+```powershell
+$env:SWORD_AGENT_CONTROL_TOKEN = "<random-token>"
+uv run python apps/publish_udp.py --control-http-host 0.0.0.0 --control-http-port 18765 --control-token-env SWORD_AGENT_CONTROL_TOKEN
+```
+
 実行中の状態をJSON行で監視したい場合は `--status-json` を指定します。
 `--status-every` は `--debug-every` と同じく、裸の数値ならフレーム間隔、`s` 付きなら秒間隔です。
 

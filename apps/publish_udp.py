@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hmac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import signal
 import sys
 import time
 import tomllib
+import threading
 import uuid
 import warnings
 from collections.abc import Mapping
@@ -33,6 +37,7 @@ DEFAULT_CAMERA_SCAN_LIMIT = 5
 MAX_CAMERA_SCAN_LIMIT = 16
 LOCAL_UDP_HOSTS = {"127.0.0.1", "localhost", "::1"}
 UDP_AUTH_TOKEN_ENV = "SWORD_VOICE_AGENT_AUTH_TOKEN"
+CONTROL_AUTH_TOKEN_ENV = "SWORD_AGENT_CONTROL_TOKEN"
 DEFAULT_THRESHOLD = 0.9
 DEFAULT_HOLD_SECONDS = 0.5
 DEFAULT_RELEASE_GRACE_SECONDS = 0.1
@@ -45,6 +50,7 @@ REDACTED_OUTPUT_VALUE = "[redacted]"
 REDACTED_OUTPUT_KEYS = {
     "api_key",
     "auth_token",
+    "control_token",
     "detected_at",
     "detected_at_monotonic",
     "sent_at",
@@ -52,6 +58,10 @@ REDACTED_OUTPUT_KEYS = {
     "timestamp",
     "token",
     "turn_id",
+}
+SECRET_CLI_OPTIONS = {
+    "--auth-token",
+    "--control-token",
 }
 
 
@@ -214,10 +224,28 @@ def is_local_udp_host(host: str) -> bool:
     return normalized in LOCAL_UDP_HOSTS or normalized.startswith("127.")
 
 
+def is_loopback_host(host: str) -> bool:
+    return is_local_udp_host(host)
+
+
 def validate_runtime_args(args: argparse.Namespace) -> None:
     if not is_local_udp_host(args.host) and not args.allow_remote_udp:
         raise ValueError(
             "refusing to send gesture UDP to a non-local host without --allow-remote-udp"
+        )
+
+
+def validate_control_http_args(
+    args: argparse.Namespace,
+    *,
+    control_token: str | None,
+) -> None:
+    if args.control_http_port is None:
+        return
+    if not is_loopback_host(args.control_http_host) and not control_token:
+        raise ValueError(
+            "refusing to bind control HTTP to a non-local host without --control-token "
+            "or --control-token-env"
         )
 
 
@@ -238,6 +266,28 @@ def apply_publish_options(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def redacted_command_line(argv: list[str] | None = None) -> list[str]:
+    values = list(sys.argv if argv is None else argv)
+    redacted: list[str] = []
+    redact_next = False
+    for value in values:
+        if redact_next:
+            redacted.append(REDACTED_OUTPUT_VALUE)
+            redact_next = False
+            continue
+
+        option, separator, _option_value = value.partition("=")
+        if option in SECRET_CLI_OPTIONS:
+            if separator:
+                redacted.append(f"{option}={REDACTED_OUTPUT_VALUE}")
+            else:
+                redacted.append(value)
+                redact_next = True
+            continue
+        redacted.append(value)
+    return redacted
+
+
 def resolve_udp_auth_token(
     *,
     auth_token: str | None,
@@ -252,6 +302,29 @@ def resolve_udp_auth_token(
     if not auth_token_env:
         return None
     env_name = auth_token_env.strip()
+    if not env_name:
+        return None
+    token = os.environ.get(env_name)
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
+
+
+def resolve_control_auth_token(
+    *,
+    control_token: str | None,
+    control_token_env: str | None,
+) -> str | None:
+    if control_token is not None:
+        token = control_token.strip()
+        if not token:
+            raise ValueError("--control-token must not be empty")
+        return token
+
+    if not control_token_env:
+        return None
+    env_name = control_token_env.strip()
     if not env_name:
         return None
     token = os.environ.get(env_name)
@@ -306,6 +379,59 @@ def print_output_json(payload: Mapping[str, object], *, redact: bool = False) ->
 
 def eprint(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+class RuntimeStatusWriter:
+    def __init__(self, path: str | Path | None, initial_payload: Mapping[str, object]) -> None:
+        self.path = Path(path) if path else None
+        self.payload = dict(initial_payload)
+
+    def write(self, **updates: object) -> None:
+        if self.path is None:
+            return
+        self.payload.update(updates)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            format_json(self.payload) + "\n",
+            encoding="utf-8",
+        )
+
+
+def runtime_status_payload(
+    args: argparse.Namespace,
+    *,
+    started_at: float,
+    control_address: tuple[str, int] | None = None,
+    command_line: list[str] | None = None,
+) -> dict[str, object]:
+    health_url = None
+    shutdown_url = None
+    if control_address is not None:
+        control_host, control_port = control_address
+        health_url = f"http://{control_host}:{control_port}/health"
+        shutdown_url = f"http://{control_host}:{control_port}/shutdown"
+
+    payload: dict[str, object] = {
+        "module": SOURCE_NAME,
+        "state": "running",
+        "pid": os.getpid(),
+        "parent_pid": os.getppid(),
+        "started_at": started_at,
+        "host": args.host,
+        "port": args.port,
+        "health_url": health_url,
+        "command_line": redacted_command_line(command_line),
+    }
+    if shutdown_url is not None:
+        payload["shutdown_url"] = shutdown_url
+    else:
+        payload["shutdown_command"] = f"send SIGINT or SIGTERM to pid {os.getpid()}"
+    if control_address is not None:
+        payload["control"] = {
+            "host": control_address[0],
+            "port": control_address[1],
+        }
+    return payload
 
 
 def destination_payload(destination: tuple[str, int]) -> dict[str, object]:
@@ -452,6 +578,121 @@ def health_payload(args: argparse.Namespace) -> dict[str, object]:
         },
         "udp": destination_payload((args.host, args.port)),
     }
+
+
+def control_health_payload(
+    *,
+    started_at_monotonic: float,
+    host: str,
+    port: int,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "module": SOURCE_NAME,
+        "pid": os.getpid(),
+        "uptime_s": round(max(0.0, time.monotonic() - started_at_monotonic), 3),
+        "host": host,
+        "port": port,
+    }
+
+
+def _extract_control_token(headers) -> str | None:
+    authorization = headers.get("Authorization")
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    header_token = headers.get("X-Sword-Agent-Token")
+    return header_token.strip() if header_token else None
+
+
+def _control_token_is_authorized(headers, expected_token: str | None) -> bool:
+    if expected_token is None:
+        return True
+    token = _extract_control_token(headers)
+    return token is not None and hmac.compare_digest(token, expected_token)
+
+
+def _send_json_response(handler: BaseHTTPRequestHandler, status: int, payload: Mapping[str, object]) -> None:
+    body = format_json(payload).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def start_control_http_server(
+    *,
+    host: str,
+    port: int,
+    started_at_monotonic: float,
+    shutdown_requested: threading.Event,
+    control_token: str | None,
+    shutdown_reason: dict[str, str] | None = None,
+) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    class ControlHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path.split("?", 1)[0] != "/health":
+                _send_json_response(self, 404, {"ok": False, "error": "not_found"})
+                return
+            actual_host, actual_port = self.server.server_address[:2]
+            _send_json_response(
+                self,
+                200,
+                control_health_payload(
+                    started_at_monotonic=started_at_monotonic,
+                    host=str(actual_host),
+                    port=int(actual_port),
+                ),
+            )
+
+        def do_POST(self) -> None:
+            if self.path.split("?", 1)[0] != "/shutdown":
+                _send_json_response(self, 404, {"ok": False, "error": "not_found"})
+                return
+            if not _control_token_is_authorized(self.headers, control_token):
+                _send_json_response(self, 401, {"ok": False, "error": "unauthorized"})
+                return
+            if shutdown_reason is not None:
+                shutdown_reason["value"] = "http_shutdown"
+            shutdown_requested.set()
+            _send_json_response(
+                self,
+                202,
+                {
+                    "ok": True,
+                    "module": SOURCE_NAME,
+                    "pid": os.getpid(),
+                    "state": "stopping",
+                },
+            )
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    try:
+        server = ThreadingHTTPServer((host, port), ControlHandler)
+    except OSError as exc:
+        raise RuntimeError(f"control HTTP port unavailable: {host}:{port}") from exc
+
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="gesture-control-http",
+        daemon=True,
+    )
+    thread.start()
+    return server, thread
+
+
+def stop_control_http_server(
+    server: ThreadingHTTPServer | None,
+    thread: threading.Thread | None,
+) -> None:
+    if server is None:
+        return
+    server.shutdown()
+    server.server_close()
+    if thread is not None:
+        thread.join(timeout=2.0)
 
 
 def runtime_metadata(
@@ -940,6 +1181,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=UDP_AUTH_TOKEN_ENV,
         help="environment variable that supplies the UDP auth_token payload field",
     )
+    parser.add_argument(
+        "--runtime-status-file",
+        help="write process runtime status JSON to this path on start and normal stop",
+    )
+    parser.add_argument(
+        "--control-http-host",
+        default="127.0.0.1",
+        help="host for optional local control HTTP server",
+    )
+    parser.add_argument(
+        "--control-http-port",
+        type=parse_port,
+        default=None,
+        help="enable optional control HTTP /health and POST /shutdown on this strict port",
+    )
+    parser.add_argument(
+        "--control-token",
+        help="token required by POST /shutdown when provided; required for non-loopback control bind",
+    )
+    parser.add_argument(
+        "--control-token-env",
+        default=CONTROL_AUTH_TOKEN_ENV,
+        help="environment variable that supplies the control HTTP shutdown token",
+    )
     parser.add_argument("--print-json", action="store_true")
     parser.add_argument("--debug", action="store_true", help="print one-line state summaries")
     parser.add_argument(
@@ -1041,6 +1306,11 @@ def main() -> int:
             auth_token=args.auth_token,
             auth_token_env=args.auth_token_env,
         )
+        control_token = resolve_control_auth_token(
+            control_token=args.control_token,
+            control_token_env=args.control_token_env,
+        )
+        validate_control_http_args(args, control_token=control_token)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -1049,10 +1319,35 @@ def main() -> int:
         print_json(payload)
         return 0 if payload["status"] == "ok" else 1
 
-    cap = cv2.VideoCapture(args.camera_index)
-    if not cap.isOpened():
-        raise RuntimeError(f"camera not available: {args.camera_index}")
+    started_at = time.time()
+    started_at_monotonic = time.monotonic()
+    shutdown_requested = threading.Event()
+    shutdown_reason = {"value": "completed"}
+    previous_signal_handlers: dict[signal.Signals, object] = {}
 
+    def request_shutdown(signum: int, _frame) -> None:
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = str(signum)
+        shutdown_reason["value"] = f"signal:{signal_name}"
+        shutdown_requested.set()
+
+    for signal_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        shutdown_signal = getattr(signal, signal_name, None)
+        if shutdown_signal is None:
+            continue
+        try:
+            previous_signal_handlers[shutdown_signal] = signal.getsignal(shutdown_signal)
+            signal.signal(shutdown_signal, request_shutdown)
+        except (ValueError, OSError):
+            pass
+
+    control_server: ThreadingHTTPServer | None = None
+    control_thread: threading.Thread | None = None
+    control_address: tuple[str, int] | None = None
+    status_writer: RuntimeStatusWriter | None = None
+    cap = None
     frame_number = 0
     fps_tracker = FpsTracker()
     hold_tracker = GestureHoldTracker(
@@ -1066,6 +1361,32 @@ def main() -> int:
     last_status_at: float | None = None
     last_heartbeat_at: float | None = None
     try:
+        if args.control_http_port is not None:
+            control_server, control_thread = start_control_http_server(
+                host=args.control_http_host,
+                port=args.control_http_port,
+                started_at_monotonic=started_at_monotonic,
+                shutdown_requested=shutdown_requested,
+                control_token=control_token,
+                shutdown_reason=shutdown_reason,
+            )
+            actual_host, actual_port = control_server.server_address[:2]
+            control_address = (str(actual_host), int(actual_port))
+
+        status_writer = RuntimeStatusWriter(
+            args.runtime_status_file,
+            runtime_status_payload(
+                args,
+                started_at=started_at,
+                control_address=control_address,
+            ),
+        )
+        status_writer.write(state="running")
+
+        cap = cv2.VideoCapture(args.camera_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"camera not available: {args.camera_index}")
+
         with (
             SwordSignDetector(
                 model_path=args.model_path,
@@ -1094,10 +1415,10 @@ def main() -> int:
                 )
                 last_heartbeat_at = time.monotonic()
 
-            while True:
+            while not shutdown_requested.is_set():
                 success, frame = cap.read()
                 if not success:
-                    time.sleep(0.05)
+                    shutdown_requested.wait(0.05)
                     continue
 
                 frame_number += 1
@@ -1220,17 +1541,36 @@ def main() -> int:
                     draw_preview_overlay(display, state, destination=publisher.address)
                     cv2.imshow(PREVIEW_WINDOW, display)
                     if cv2.waitKey(1) & 0xFF == 27:
+                        shutdown_reason["value"] = "preview_escape"
                         break
 
                 if args.interval > 0:
-                    time.sleep(args.interval)
+                    shutdown_requested.wait(args.interval)
     except KeyboardInterrupt:
-        pass
+        shutdown_reason["value"] = "keyboard_interrupt"
+        shutdown_requested.set()
+    except Exception:
+        if not shutdown_requested.is_set():
+            shutdown_reason["value"] = "error"
+        raise
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
         if args.preview:
             cv2.destroyAllWindows()
-        eprint("stopped")
+        stop_control_http_server(control_server, control_thread)
+        if status_writer is not None:
+            status_writer.write(
+                state="stopped",
+                stopped_at=time.time(),
+                exit_reason=shutdown_reason["value"],
+            )
+        for shutdown_signal, previous_handler in previous_signal_handlers.items():
+            try:
+                signal.signal(shutdown_signal, previous_handler)
+            except (ValueError, OSError):
+                pass
+        eprint(f"stopped reason={shutdown_reason['value']}")
     return 0
 
 

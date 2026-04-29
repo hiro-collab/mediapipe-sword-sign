@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-29 - Cooperative shutdown controls
+
+統合起動時の残プロセス対策として、`mediapipe-sword-sign` の長時間起動プロセスに協調停止用の契約を追加しました。
+
+- `apps/publish_udp.py`
+  - `--runtime-status-file` を追加し、起動中のPID、親PID、起動時刻、UDP送信先、health/shutdown情報、redact済みcommand lineを書けるように変更。
+  - 正常終了時に runtime status file へ `state: "stopped"`、`stopped_at`、`exit_reason` を書くように追加。
+  - `SIGINT` / `SIGTERM` / Windows `SIGBREAK` を受けたときにメインループを止め、既存の `finally` でカメラ、UDP socket、OpenCV windowを閉じるように変更。
+  - 任意の `--control-http-port` を追加し、strict portで `GET /health` と `POST /shutdown` を提供。
+  - loopback以外にcontrol HTTPをbindする場合は `--control-token` または `--control-token-env` を必須化。
+- `tests/test_publish_udp.py`
+  - runtime status file、command line redaction、control HTTP health/shutdown、token必須条件の回帰テストを追加。
+- `README.md`
+  - runtime status file と control HTTP の運用方法を追記。
+
 ## 2026-04-29 - Edge-centered UDP diagnostics
 
 モジュール利用側の追加要望を受け、汎用publisherの互換性を保ったままedge中心の運用を選べるようにしました。

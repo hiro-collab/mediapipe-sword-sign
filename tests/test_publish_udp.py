@@ -1,5 +1,12 @@
 import argparse
+import json
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from apps.publish_udp import (
@@ -7,6 +14,7 @@ from apps.publish_udp import (
     EDGE_GESTURE_ACTIVE,
     EDGE_GESTURE_RELEASED,
     FpsTracker,
+    RuntimeStatusWriter,
     apply_latency_profile,
     apply_publish_options,
     build_parser,
@@ -22,13 +30,18 @@ from apps.publish_udp import (
     parse_port,
     parse_threshold,
     redact_output_payload,
+    redacted_command_line,
     resolve_udp_auth_token,
     runtime_metadata,
+    runtime_status_payload,
     safe_model_error,
     schema_payload,
     should_print_debug,
+    start_control_http_server,
     state_with_runtime_metadata,
+    stop_control_http_server,
     status_payload,
+    validate_control_http_args,
     validate_runtime_args,
 )
 from mediapipe_sword_sign.model_loader import UnsafeModelError
@@ -148,6 +161,14 @@ class PublishUdpDebugTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_runtime_args(argparse.Namespace(host="192.0.2.10", allow_remote_udp=False))
 
+    def test_validate_control_http_args_requires_token_for_non_loopback_bind(self):
+        args = argparse.Namespace(control_http_port=18080, control_http_host="0.0.0.0")
+
+        with self.assertRaises(ValueError):
+            validate_control_http_args(args, control_token=None)
+
+        validate_control_http_args(args, control_token="secret")
+
     def test_resolve_udp_auth_token_reads_default_env(self):
         with mock.patch.dict(
             "os.environ",
@@ -179,6 +200,105 @@ class PublishUdpDebugTests(unittest.TestCase):
     def test_resolve_udp_auth_token_rejects_empty_direct_value(self):
         with self.assertRaises(ValueError):
             resolve_udp_auth_token(auth_token=" ", auth_token_env="SWORD_VOICE_AGENT_AUTH_TOKEN")
+
+    def test_redacted_command_line_removes_secret_option_values(self):
+        command_line = redacted_command_line(
+            [
+                "publish_udp.py",
+                "--auth-token",
+                "secret-token",
+                "--control-token=control-secret",
+                "--host",
+                "127.0.0.1",
+            ]
+        )
+
+        self.assertEqual(
+            command_line,
+            [
+                "publish_udp.py",
+                "--auth-token",
+                "[redacted]",
+                "--control-token=[redacted]",
+                "--host",
+                "127.0.0.1",
+            ],
+        )
+
+    def test_runtime_status_writer_records_running_and_stopped_states(self):
+        args = argparse.Namespace(host="127.0.0.1", port=8765)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = f"{temp_dir}/runtime/status.json"
+            writer = RuntimeStatusWriter(
+                path,
+                runtime_status_payload(
+                    args,
+                    started_at=123.0,
+                    control_address=("127.0.0.1", 18080),
+                    command_line=[
+                        "publish_udp.py",
+                        "--auth-token",
+                        "secret-token",
+                    ],
+                ),
+            )
+
+            writer.write(state="running")
+            running = json.loads(Path(path).read_text(encoding="utf-8"))
+            writer.write(state="stopped", stopped_at=124.0)
+            stopped = json.loads(Path(path).read_text(encoding="utf-8"))
+
+        self.assertEqual(running["module"], "mediapipe_sword_sign")
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(running["host"], "127.0.0.1")
+        self.assertEqual(running["port"], 8765)
+        self.assertEqual(running["health_url"], "http://127.0.0.1:18080/health")
+        self.assertEqual(running["shutdown_url"], "http://127.0.0.1:18080/shutdown")
+        self.assertEqual(running["command_line"][2], "[redacted]")
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["stopped_at"], 124.0)
+
+    def test_control_http_health_and_shutdown(self):
+        shutdown_requested = threading.Event()
+        shutdown_reason = {"value": "completed"}
+        server, thread = start_control_http_server(
+            host="127.0.0.1",
+            port=0,
+            started_at_monotonic=time.monotonic(),
+            shutdown_requested=shutdown_requested,
+            control_token="secret",
+            shutdown_reason=shutdown_reason,
+        )
+        host, port = server.server_address[:2]
+        base_url = f"http://{host}:{port}"
+        try:
+            with urllib.request.urlopen(f"{base_url}/health", timeout=2) as response:
+                health = json.loads(response.read().decode("utf-8"))
+
+            unauthorized = urllib.request.Request(
+                f"{base_url}/shutdown",
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(unauthorized, timeout=2)
+
+            authorized = urllib.request.Request(
+                f"{base_url}/shutdown",
+                method="POST",
+                headers={"X-Sword-Agent-Token": "secret"},
+            )
+            with urllib.request.urlopen(authorized, timeout=2) as response:
+                shutdown = json.loads(response.read().decode("utf-8"))
+        finally:
+            stop_control_http_server(server, thread)
+
+        self.assertEqual(health["ok"], True)
+        self.assertEqual(health["module"], "mediapipe_sword_sign")
+        self.assertEqual(health["pid"], shutdown["pid"])
+        self.assertEqual(raised.exception.code, 401)
+        self.assertEqual(shutdown["state"], "stopping")
+        self.assertTrue(shutdown_requested.is_set())
+        self.assertEqual(shutdown_reason["value"], "http_shutdown")
 
     def test_safe_model_error_does_not_return_internal_paths(self):
         self.assertEqual(
