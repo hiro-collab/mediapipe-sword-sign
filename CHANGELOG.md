@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-29 - Edge-centered UDP diagnostics
+
+モジュール利用側の追加要望を受け、汎用publisherの互換性を保ったままedge中心の運用を選べるようにしました。
+
+- `apps/publish_udp.py`
+  - `--state-every` を追加し、`0` / `off` / `none` で通常の `gesture_state` 定期送信を止められるように変更。
+  - `--edge-only` を追加し、`gesture_edge` と明示的に有効化した heartbeat/status だけで運用しやすく変更。
+  - `gesture_heartbeat` payloadへ `frame_id`、`fps`、`hand_detected`、`primary_gesture` を常に追加。
+  - `--schema-json` の `gesture_status` / `gesture_heartbeat` 契約に diagnostic fields を反映。
+- `tests/test_publish_udp.py`
+  - edge-onlyオプション、state送信抑制、heartbeat diagnostic fields、schema契約の回帰テストを追加。
+- `README.md`
+  - edge中心運用とheartbeat diagnostic fieldsの利用方法を追記。
+
 ## 2026-04-29 - Latency output redaction hardening
 
 latency instrumentation追加後のセキュリティ再確認として、stdout/debugへ出る実行時識別子と時刻情報の扱いを安全側に寄せました。

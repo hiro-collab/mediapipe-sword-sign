@@ -232,6 +232,12 @@ def apply_latency_profile(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def apply_publish_options(args: argparse.Namespace) -> argparse.Namespace:
+    if getattr(args, "edge_only", False):
+        args.state_every = None
+    return args
+
+
 def resolve_udp_auth_token(
     *,
     auth_token: str | None,
@@ -667,6 +673,8 @@ def heartbeat_payload(
     camera_index: int,
     destination: tuple[str, int],
     fps: float,
+    hand_detected: bool = False,
+    primary_gesture: str | None = None,
 ) -> dict[str, object]:
     return {
         "type": "gesture_heartbeat",
@@ -679,6 +687,8 @@ def heartbeat_payload(
         },
         "udp": destination_payload(destination),
         "frame_id": frame_number,
+        "hand_detected": bool(hand_detected),
+        "primary_gesture": primary_gesture,
         "fps": round(fps, 3),
     }
 
@@ -770,7 +780,16 @@ def schema_payload() -> dict[str, object]:
             {
                 "title": "GestureStatus",
                 "type": "object",
-                "required": ["type", "status", "camera", "udp", "frame_id", "fps"],
+                "required": [
+                    "type",
+                    "status",
+                    "camera",
+                    "udp",
+                    "frame_id",
+                    "hand_detected",
+                    "primary_gesture",
+                    "fps",
+                ],
                 "properties": {
                     "type": {"const": "gesture_status"},
                     "auth_token": {"type": "string"},
@@ -778,19 +797,34 @@ def schema_payload() -> dict[str, object]:
                     "camera": {"type": "object"},
                     "udp": {"type": "object"},
                     "frame_id": {"type": "integer"},
+                    "hand_detected": {"type": "boolean"},
+                    "primary_gesture": {"type": ["string", "null"]},
                     "fps": {"type": "number"},
                 },
             },
             {
                 "title": "GestureHeartbeat",
                 "type": "object",
-                "required": ["type", "status", "camera", "udp"],
+                "required": [
+                    "type",
+                    "status",
+                    "camera",
+                    "udp",
+                    "frame_id",
+                    "hand_detected",
+                    "primary_gesture",
+                    "fps",
+                ],
                 "properties": {
                     "type": {"const": "gesture_heartbeat"},
                     "auth_token": {"type": "string"},
                     "status": {"const": "sending"},
                     "camera": {"type": "object"},
                     "udp": {"type": "object"},
+                    "frame_id": {"type": "integer"},
+                    "hand_detected": {"type": "boolean"},
+                    "primary_gesture": {"type": ["string", "null"]},
+                    "fps": {"type": "number"},
                 },
             },
         ],
@@ -937,6 +971,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="send UDP heartbeat interval; use 0/off/none to disable",
     )
     parser.add_argument(
+        "--state-every",
+        type=parse_optional_interval,
+        default=DebugEvery(1, "frames"),
+        help="send gesture_state interval; use 0/off/none for edge-only UDP",
+    )
+    parser.add_argument(
+        "--edge-only",
+        action="store_true",
+        help="shortcut for --state-every off; still sends gesture_edge and explicit heartbeat/status output",
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
         help="show an OpenCV preview window with gesture overlay",
@@ -973,7 +1018,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     parser = build_parser()
-    args = apply_latency_profile(parser.parse_args())
+    args = apply_publish_options(apply_latency_profile(parser.parse_args()))
     if args.suppress_protobuf_warnings:
         suppress_protobuf_deprecation_warnings()
 
@@ -1016,6 +1061,7 @@ def main() -> int:
         release_grace_seconds=args.release_grace_seconds,
     )
     active_turn_id: str | None = None
+    last_state_at: float | None = None
     last_debug_at: float | None = None
     last_status_at: float | None = None
     last_heartbeat_at: float | None = None
@@ -1034,7 +1080,7 @@ def main() -> int:
                 f"{args.camera_index} udp={args.host}:{args.port} version={get_version()} "
                 f"latency_profile={args.latency_profile} threshold={args.threshold:g} "
                 f"hold={args.hold_seconds:g}s grace={args.release_grace_seconds:g}s "
-                f"target={args.target_gesture}"
+                f"target={args.target_gesture} state_every={args.state_every or 'off'}"
             )
             eprint(f"udp_sending destination={args.host}:{args.port}")
             if args.heartbeat_every is not None:
@@ -1080,9 +1126,16 @@ def main() -> int:
                     turn_id=turn_id,
                     detected_at_monotonic=detected_at_monotonic,
                 )
-                publisher.publish_payload(state_payload)
-                if args.print_json:
-                    print_output_json(state_payload, redact=args.redact_output)
+                if args.state_every is not None and should_print_debug(
+                    args.state_every,
+                    frame_number=frame_number,
+                    last_debug_at=last_state_at,
+                    now=detected_at_monotonic,
+                ):
+                    publisher.publish_payload(state_payload)
+                    if args.print_json:
+                        print_output_json(state_payload, redact=args.redact_output)
+                    last_state_at = detected_at_monotonic
 
                 if hold.activated or hold.released:
                     assert turn_id is not None
@@ -1156,6 +1209,8 @@ def main() -> int:
                             camera_index=args.camera_index,
                             destination=publisher.address,
                             fps=fps,
+                            hand_detected=state.hand_detected,
+                            primary_gesture=state.primary,
                         )
                     )
                     last_heartbeat_at = detected_at_monotonic

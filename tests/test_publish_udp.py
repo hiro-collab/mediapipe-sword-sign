@@ -8,6 +8,8 @@ from apps.publish_udp import (
     EDGE_GESTURE_RELEASED,
     FpsTracker,
     apply_latency_profile,
+    apply_publish_options,
+    build_parser,
     edge_event_name,
     format_debug_summary,
     format_edge_debug_summary,
@@ -126,6 +128,18 @@ class PublishUdpDebugTests(unittest.TestCase):
         self.assertEqual(args.threshold, 0.91)
         self.assertEqual(args.hold_seconds, 0.25)
         self.assertEqual(args.release_grace_seconds, 0.2)
+
+    def test_publish_options_support_edge_only_state_suppression(self):
+        args = build_parser().parse_args(["--edge-only"])
+
+        applied = apply_publish_options(args)
+
+        self.assertIsNone(applied.state_every)
+
+    def test_state_every_accepts_disabled_value(self):
+        args = build_parser().parse_args(["--state-every", "off"])
+
+        self.assertIsNone(args.state_every)
 
     def test_validate_runtime_args_requires_remote_udp_opt_in(self):
         validate_runtime_args(argparse.Namespace(host="127.0.0.1", allow_remote_udp=False))
@@ -423,19 +437,31 @@ class PublishUdpDebugTests(unittest.TestCase):
             camera_index=0,
             destination=("127.0.0.1", 8765),
             fps=15.5,
+            hand_detected=True,
+            primary_gesture="sword_sign",
         )
 
         self.assertEqual(payload["type"], "gesture_heartbeat")
         self.assertEqual(payload["status"], "sending")
         self.assertEqual(payload["udp"], {"host": "127.0.0.1", "port": 8765})
+        self.assertEqual(payload["frame_id"], 3)
+        self.assertTrue(payload["hand_detected"])
+        self.assertEqual(payload["primary_gesture"], "sword_sign")
+        self.assertEqual(payload["fps"], 15.5)
 
     def test_schema_payload_documents_message_types(self):
         schema = schema_payload()
-        titles = {item["title"] for item in schema["oneOf"]}
+        items_by_title = {item["title"]: item for item in schema["oneOf"]}
+        titles = set(items_by_title)
 
         self.assertIn("GestureState", titles)
+        self.assertIn("GestureEdge", titles)
         self.assertIn("GestureStatus", titles)
         self.assertIn("GestureHeartbeat", titles)
+        self.assertIn("event", items_by_title["GestureEdge"]["required"])
+        self.assertIn("target_gesture", items_by_title["GestureEdge"]["properties"])
+        self.assertIn("hand_detected", items_by_title["GestureHeartbeat"]["required"])
+        self.assertIn("primary_gesture", items_by_title["GestureHeartbeat"]["required"])
         for item in schema["oneOf"]:
             self.assertIn("auth_token", item["properties"])
 
