@@ -12,3 +12,7 @@ dependencies = [
     "scikit-learn==1.8.0",
     "websockets==16.0",
 ]
+
+[tool.uv]
+cache-dir = ".uv-cache"
+
