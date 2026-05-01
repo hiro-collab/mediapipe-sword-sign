@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mediapipe_sword_sign import GESTURE_SWORD_SIGN, SwordSignDetector
+from mediapipe_sword_sign import GESTURE_SWORD_SIGN, SwordSignDetector, UnsafeModelError
 from mediapipe_sword_sign.adapters import WebSocketGestureBroadcaster
 from mediapipe_sword_sign.temporal import GestureHoldTracker
 from mediapipe_sword_sign.types import DISPLAY_NAMES, GestureState
@@ -24,6 +24,23 @@ from mediapipe_sword_sign.types import DISPLAY_NAMES, GestureState
 
 PREVIEW_WINDOW = "Gesture Monitor Preview"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def is_local_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in LOCAL_HOSTS or normalized.startswith("127.")
+
+
+def safe_start_error(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "モデルファイルが見つかりません。"
+    if isinstance(exc, UnsafeModelError):
+        return "モデルファイルを安全に検証できませんでした。SHA-256を指定するか、信頼できるモデルだけを選択してください。"
+    if isinstance(exc, RuntimeError) and "camera not available" in str(exc):
+        return "カメラを開けませんでした。カメラ番号と利用中のアプリを確認してください。"
+    if isinstance(exc, ValueError):
+        return str(exc)
+    return "起動に失敗しました。設定を確認してください。"
 
 
 class WebSocketRuntime:
@@ -247,11 +264,18 @@ class GestureMonitorGui:
     def start(self) -> None:
         self.stop()
         host = self.host.get().strip() or "127.0.0.1"
-        if host not in LOCAL_HOSTS:
+        auth_token = self.auth_token.get().strip() or None
+        if not is_local_host(host) and not auth_token:
+            messagebox.showerror(
+                "Token required",
+                "ローカル以外のWebSocket公開にはTokenが必要です。",
+            )
+            return
+        if not is_local_host(host):
             confirmed = messagebox.askyesno(
                 "Non-local WebSocket host",
                 "The selected host is not 127.0.0.1, localhost, or ::1.\n"
-                "Only bind to a non-local address on a trusted network and prefer using a token.\n\n"
+                "Only bind to a non-local address on a trusted network and keep the token private.\n\n"
                 "Continue?",
             )
             if not confirmed:
@@ -259,7 +283,6 @@ class GestureMonitorGui:
 
         model_path = self.model_path.get().strip() or None
         model_sha256 = self.model_sha256.get().strip() or None
-        auth_token = self.auth_token.get().strip() or None
         try:
             self.detector = SwordSignDetector(
                 model_path=model_path,
@@ -278,7 +301,7 @@ class GestureMonitorGui:
             )
         except Exception as exc:
             self.stop()
-            messagebox.showerror("Start failed", str(exc))
+            messagebox.showerror("Start failed", safe_start_error(exc))
             return
 
         self.hold_tracker.reset()
@@ -409,8 +432,8 @@ class GestureMonitorGui:
         self._last_publish_future = None
         try:
             sent_count = future.result()
-        except Exception as exc:
-            self.last_publish_result.set(f"publish failed: {exc}")
+        except Exception:
+            self.last_publish_result.set("publish failed")
             self.websocket_state.set("Error")
             return
         if sent_count:

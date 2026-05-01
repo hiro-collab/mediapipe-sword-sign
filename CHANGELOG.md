@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-05-01 - Security hardening pass
+
+Qiita記事の観点に合わせ、ローカル実験用のままでも公開事故につながりやすい箇所を追加で固めました。
+
+- `mediapipe_sword_sign/features.py` / `mediapipe_sword_sign/detector.py`
+  - 特徴量、しきい値、MediaPipe model complexityの入力検証を追加し、NaN/Infinityや範囲外値を拒否。
+- `mediapipe_sword_sign/adapters/websocket.py` / `apps/serve_websocket.py`
+  - WebSocketのポート、接続数、受信メッセージサイズ、受信キューの検証と既定上限を追加。
+  - 空トークンを未設定として扱い、クエリパラメータ過多の認証リクエストを拒否。
+  - wildcard Originを拒否。
+- `apps/settings_gui.py` / `apps/gesture_monitor_gui.py`
+  - GUIの起動失敗メッセージでモデルパスなどの内部情報を直接表示しないよう変更。
+  - 診断GUIでlocalhost以外にWebSocket公開する場合、Tokenなしでは開始しないよう変更。
+- `SECURITY.md`
+  - シークレット、pickleモデル、通信公開、入力検証、依存関係監査の運用チェックリストを追加。
+- `tests/`
+  - 上記の入力検証・エラー秘匿・WebSocket制限の回帰テストを追加。
+
 ## 2026-04-28 - UDP auth token support
 
 モジュール利用側からの指摘を受け、`sword-voice-agent` など認証付きUDP receiverと安全に連携しやすいようにしました。

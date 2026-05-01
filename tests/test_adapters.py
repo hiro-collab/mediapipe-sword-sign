@@ -145,12 +145,47 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             WebSocketGestureBroadcaster(host="0.0.0.0")
 
+    def test_websocket_broadcaster_normalizes_empty_auth_token(self):
+        broadcaster = WebSocketGestureBroadcaster(auth_token=" ")
+
+        self.assertIsNone(broadcaster.auth_token)
+
+    def test_websocket_broadcaster_rejects_invalid_runtime_limits(self):
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(port=0)
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(max_clients=0)
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(max_message_bytes=0)
+
+    def test_websocket_broadcaster_rejects_wildcard_origin(self):
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(allowed_origins=["*"])
+
+    def test_websocket_broadcaster_accepts_single_origin_string(self):
+        broadcaster = WebSocketGestureBroadcaster(allowed_origins="http://localhost:3000")
+
+        self.assertEqual(broadcaster.allowed_origins, ["http://localhost:3000"])
+
     def test_websocket_broadcaster_rejects_wrong_token(self):
         async def run():
             client = ClosingWebSocketClient()
             broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
 
             await broadcaster._handler(client, "/?token=wrong")
+
+            self.assertEqual(client.closed, [(1008, "unauthorized")])
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_rejects_query_parameter_flood(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
+            query = "&".join(f"unused{i}=1" for i in range(9))
+
+            await broadcaster._handler(client, f"/?{query}&token=secret")
 
             self.assertEqual(client.closed, [(1008, "unauthorized")])
             self.assertNotIn(client, broadcaster.clients)
