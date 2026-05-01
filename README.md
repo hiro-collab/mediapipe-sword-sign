@@ -59,6 +59,9 @@ print(state.to_json())
 5. 設定GUI
    `uv run python apps/settings_gui.py`
 
+6. 診断GUI
+   `uv run python apps/gesture_monitor_gui.py`
+
 ## Security Notes
 
 このリポジトリはローカル実験用ですが、公開・共有する場合は以下を守ってください。
@@ -136,6 +139,82 @@ uv run python apps/settings_gui.py
 - `Event`: stable active への切り替わり、または release を表示します。
 
 停止するには設定ウィンドウの `Stop` を押します。プレビューウィンドウが有効な場合は、プレビュー側で `Esc` を押しても停止できます。
+
+## Gesture Monitor GUI
+
+診断GUIは、カメラ入力、MediaPipe hand landmarks、ジェスチャー判定、WebSocket配信状態を同時に確認するための汎用デバッグツールです。
+特定の受信アプリには依存せず、既存の `GestureState` JSONをWebSocketで配信します。
+
+```bash
+uv run python apps/gesture_monitor_gui.py
+```
+
+初期値では `ws://127.0.0.1:8765` でWebSocket broadcasterを起動します。
+`Start` を押すとカメラ、検出器、WebSocket broadcasterが起動し、OpenCVの `Gesture Monitor Preview` ウィンドウにカメラ映像と手ランドマークを表示します。
+
+主な確認項目です。
+
+- `Primary`: thresholdを超えて実際に有効扱いされたgestureです。threshold未満の場合は `none` になります。
+- `Best`: threshold未満でも、現在フレームで最もconfidenceが高いgestureです。
+- `Raw sword_sign`: `GestureState.gestures.sword_sign.active` とconfidenceです。
+- `Stable sword_sign`: `GestureHoldTracker` による継続判定後のactive状態です。
+- `Confidence`: `sword_sign` のconfidenceを大きく表示します。姿勢、距離、照明、threshold調整に使います。
+- `Event Log`: raw active/inactiveの変化、stable activated/releasedを記録します。
+- `WebSocket`: broadcasterの起動状態です。
+- `Clients`: 接続中WebSocketクライアント数です。
+- `Last Generated JSON`: 最後に生成した `GestureState` JSONです。クライアントが0件でも更新されます。
+- `Last Published At` / `Last Publish Result`: 生成時刻と、生成のみか接続中クライアントへ送信したかを表示します。
+
+設定項目です。
+
+- `Camera`: 使用するカメラ番号です。内蔵カメラは多くの場合 `0` です。
+- `Threshold`: 1フレームごとの推論結果をactiveとみなすconfidenceしきい値です。
+- `Hold`: raw activeが何秒続いたらstable activeとみなすかを指定します。
+- `Grace`: 一瞬だけ手が外れた場合にstable activeを維持する猶予時間です。
+- `Host` / `Port`: WebSocket broadcasterの待受アドレスです。初期値は `127.0.0.1:8765` です。
+- `Token`: WebSocket接続にtokenを要求する場合に指定します。クライアントは `Authorization: Bearer <token>`、`X-Gesture-Token`、またはローカル検証用途の `?token=<token>` で接続できます。
+- `Mirror`: プレビューと判定入力を左右反転します。
+- `Landmarks`: プレビューにMediaPipeの手ランドマークを表示します。
+- `Preview`: OpenCVプレビューウィンドウの表示/非表示を切り替えます。
+
+`Host` に `127.0.0.1`、`localhost`、`::1` 以外を指定した場合は警告を表示します。
+ローカル以外へ公開する場合は、信頼できるネットワーク内に限定し、tokenの利用を検討してください。
+初期版の診断GUIでは `allowed-origin` と `max-clients` の詳細設定はGUIに出していません。`max-clients` は既存のWebSocket broadcasterの既定値を使います。
+
+WebSocketで配信されるpayloadは `GestureState.to_json()` と互換です。
+
+```json
+{
+  "type": "gesture_state",
+  "gestures": {
+    "sword_sign": {
+      "active": true,
+      "confidence": 0.95
+    }
+  }
+}
+```
+
+任意のWebSocketクライアントは、次のURLへ接続して `gesture_state` を受信できます。
+
+```text
+ws://127.0.0.1:8765
+```
+
+### AITuberKit GestureVoiceBridge Example
+
+AITuberKitの `GestureVoiceBridge` と接続する場合も、診断GUI側の配信形式は汎用の `GestureState` JSONのままです。
+診断GUIを初期値の `127.0.0.1:8765` で起動し、AITuberKit側で次の環境変数を設定します。
+
+```env
+NEXT_PUBLIC_GESTURE_VOICE_BRIDGE_ENABLED="true"
+NEXT_PUBLIC_GESTURE_VOICE_WS_URL="ws://127.0.0.1:8765"
+NEXT_PUBLIC_GESTURE_VOICE_GESTURE="sword_sign"
+NEXT_PUBLIC_GESTURE_VOICE_MIN_CONFIDENCE="0.9"
+```
+
+AITuberKit側は `gestures.sword_sign.active` と `gestures.sword_sign.confidence` を参照します。
+heartbeatや特定パスは不要です。診断GUIでtokenを設定した場合は、AITuberKit側のURLを `ws://127.0.0.1:8765?token=<token>` のように指定してください。
 
 ## Temporal Gesture State
 
