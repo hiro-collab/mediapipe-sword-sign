@@ -39,6 +39,7 @@ class UdpGesturePublisher:
         self._sock.sendto(
             json.dumps(
                 self._payload_with_auth(payload),
+                allow_nan=False,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode(self.encoding),
@@ -53,6 +54,7 @@ class UdpGesturePublisher:
         self._sock.sendto(
             json.dumps(
                 self._payload_with_auth(state.to_dict()),
+                allow_nan=False,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode(self.encoding),

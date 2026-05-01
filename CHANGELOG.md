@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-01 - Stable payload security follow-up
+
+`add stable websocket payload` 更新後のセキュリティ確認で、外部へ配信するJSONの厳格化を追加しました。
+
+- `mediapipe_sword_sign/payloads.py`
+  - `sequence`、stable target、`held_for`、`confidence` の値域検証を追加。
+  - WebSocket payloadで `NaN` / `Infinity` をJSONへ出さないよう `allow_nan=False` を指定。
+- `mediapipe_sword_sign/types.py` / `mediapipe_sword_sign/adapters/udp.py` / `apps/publish_udp.py`
+  - `GestureState`、UDP payload、CLI JSON出力も厳格JSONに統一。
+- `tests/`
+  - 非有限値、負のsequence、制御文字入りstable targetの回帰テストを追加。
+
 ## 2026-05-01 - Security hardening pass
 
 Qiita記事の観点に合わせ、ローカル実験用のままでも公開事故につながりやすい箇所を追加で固めました。

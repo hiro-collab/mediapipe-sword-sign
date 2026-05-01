@@ -1,4 +1,5 @@
 import json
+import math
 import unittest
 
 from mediapipe_sword_sign.payloads import GESTURE_STATE_SCHEMA_VERSION, gesture_state_json, gesture_state_payload
@@ -59,6 +60,40 @@ class GesturePayloadTests(unittest.TestCase):
         self.assertEqual(payload["type"], "gesture_state")
         self.assertEqual(payload["schema_version"], GESTURE_STATE_SCHEMA_VERSION)
         self.assertEqual(payload["sequence"], 9)
+
+    def test_payload_rejects_invalid_sequence(self):
+        with self.assertRaises(ValueError):
+            gesture_state_payload(make_state(), sequence=-1)
+
+    def test_payload_rejects_non_finite_stable_values(self):
+        stable = GestureHoldState(
+            target="sword_sign",
+            current_active=True,
+            active=True,
+            changed=False,
+            activated=False,
+            released=False,
+            held_for=math.nan,
+            confidence=0.95,
+        )
+
+        with self.assertRaises(ValueError):
+            gesture_state_payload(make_state(), stable=stable)
+
+    def test_payload_rejects_invalid_stable_target(self):
+        stable = GestureHoldState(
+            target="bad\nname",
+            current_active=True,
+            active=True,
+            changed=False,
+            activated=False,
+            released=False,
+            held_for=0.5,
+            confidence=0.95,
+        )
+
+        with self.assertRaises(ValueError):
+            gesture_state_payload(make_state(), stable=stable)
 
 
 if __name__ == "__main__":
