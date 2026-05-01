@@ -3,9 +3,11 @@ import unittest
 from unittest import mock
 
 from apps.serve_websocket import (
+    parse_hold_seconds,
     parse_interval,
     parse_max_clients,
     parse_port,
+    parse_release_grace_seconds,
     parse_threshold,
     resolve_ws_auth_token,
     safe_runtime_error,
@@ -37,6 +39,15 @@ class ServeWebSocketSecurityTests(unittest.TestCase):
             parse_interval("nan")
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_max_clients("0")
+
+    def test_parse_stable_timing_accepts_non_negative_values(self):
+        self.assertEqual(parse_hold_seconds("0"), 0.0)
+        self.assertEqual(parse_hold_seconds("0.5"), 0.5)
+        self.assertEqual(parse_release_grace_seconds("0.1"), 0.1)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_hold_seconds("-0.1")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_release_grace_seconds("nan")
 
     def test_resolve_ws_auth_token_trims_env_value(self):
         with mock.patch.dict("os.environ", {"GESTURE_WS_TOKEN": " secret "}, clear=True):

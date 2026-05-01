@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from mediapipe_sword_sign import GESTURE_SWORD_SIGN, SwordSignDetector, UnsafeModelError
 from mediapipe_sword_sign.adapters import WebSocketGestureBroadcaster
+from mediapipe_sword_sign.payloads import gesture_state_json
 from mediapipe_sword_sign.temporal import GestureHoldTracker
 from mediapipe_sword_sign.types import DISPLAY_NAMES, GestureState
 
@@ -59,6 +60,12 @@ class WebSocketRuntime:
             return 0
         return len(self.broadcaster.clients)
 
+    @property
+    def last_client_address(self) -> str:
+        if self.broadcaster is None:
+            return "-"
+        return self.broadcaster.last_client_address or "-"
+
     def start(self, *, host: str, port: int, auth_token: str | None) -> None:
         self.stop()
         self.loop = asyncio.new_event_loop()
@@ -95,17 +102,17 @@ class WebSocketRuntime:
         self.loop = None
         self.thread = None
 
-    def publish(self, state: GestureState) -> Future[int] | None:
+    def publish_message(self, message: str) -> Future[int] | None:
         broadcaster = self.broadcaster
         loop = self.loop
         if broadcaster is None or loop is None or not loop.is_running():
             return None
-        return asyncio.run_coroutine_threadsafe(self._publish(state), loop)
+        return asyncio.run_coroutine_threadsafe(self._publish_message(message), loop)
 
-    async def _publish(self, state: GestureState) -> int:
+    async def _publish_message(self, message: str) -> int:
         assert self.broadcaster is not None
         client_count = len(self.broadcaster.clients)
-        await self.broadcaster.publish(state)
+        await self.broadcaster.publish_message(message)
         return client_count
 
     def _run_loop(self) -> None:
@@ -144,10 +151,15 @@ class GestureMonitorGui:
         self._raw_active: bool | None = None
         self._stable_active: bool | None = None
         self._last_publish_future: Future[int] | None = None
+        self._sequence = 0
+        self._last_fps_at: float | None = None
+        self._fps = 0.0
 
         self.capture_state = tk.StringVar(value="Stopped")
         self.websocket_state = tk.StringVar(value="Stopped")
         self.client_count = tk.StringVar(value="0")
+        self.last_client_address = tk.StringVar(value="-")
+        self.fps = tk.StringVar(value="0.0")
         self.primary_gesture = tk.StringVar(value="none")
         self.best_gesture = tk.StringVar(value="-")
         self.sword_raw_state = tk.StringVar(value="inactive")
@@ -220,6 +232,8 @@ class GestureMonitorGui:
             ("Capture", self.capture_state),
             ("WebSocket", self.websocket_state),
             ("Clients", self.client_count),
+            ("Last Client", self.last_client_address),
+            ("FPS", self.fps),
             ("Primary", self.primary_gesture),
             ("Best", self.best_gesture),
             ("Raw sword_sign", self.sword_raw_state),
@@ -307,6 +321,9 @@ class GestureMonitorGui:
         self.hold_tracker.reset()
         self._raw_active = None
         self._stable_active = None
+        self._sequence = 0
+        self._last_fps_at = None
+        self._fps = 0.0
         self.running = True
         self.capture_state.set("Running")
         self.websocket_state.set(f"Listening on ws://{host}:{int(self.port.get())}")
@@ -326,6 +343,8 @@ class GestureMonitorGui:
         self.capture_state.set("Stopped")
         self.websocket_state.set("Stopped")
         self.client_count.set("0")
+        self.last_client_address.set("-")
+        self.fps.set("0.0")
         self.primary_gesture.set("none")
         self.best_gesture.set("-")
         self.sword_raw_state.set("inactive")
@@ -342,6 +361,7 @@ class GestureMonitorGui:
         if self.running and self.detector is not None and self.cap is not None:
             self._update_frame()
         self.client_count.set(str(self.websocket.client_count))
+        self.last_client_address.set(self.websocket.last_client_address)
         self._finish_publish_if_ready()
         self.root.after(15, self._tick)
 
@@ -364,7 +384,9 @@ class GestureMonitorGui:
         mirrored = self.mirror_preview.get()
         result = self.detector.detect_frame(frame, flip=mirrored)
         state = result.state
-        hold = self.hold_tracker.update(state, now=time.monotonic())
+        now = time.monotonic()
+        hold = self.hold_tracker.update(state, now=now)
+        self._update_fps(now)
         best = state.best_gesture()
         sword = state.sword_sign
         primary = state.primary or "none"
@@ -381,7 +403,7 @@ class GestureMonitorGui:
         self.held_for.set(f"{hold.held_for:.2f}s")
 
         self._record_transitions(sword.active, hold.active, hold.activated, hold.released)
-        self._publish_state(state)
+        self._publish_state(state, hold)
 
         if self.show_preview.get():
             self._show_preview(frame, result.hand_landmarks, state, hold, mirrored)
@@ -411,15 +433,16 @@ class GestureMonitorGui:
         elif stable_released:
             self._append_event("stable released")
 
-    def _publish_state(self, state: GestureState) -> None:
-        message = state.to_json()
+    def _publish_state(self, state: GestureState, hold) -> None:
+        self._sequence += 1
+        message = gesture_state_json(state, sequence=self._sequence, stable=hold)
         self.last_json.delete("1.0", tk.END)
         self.last_json.insert(tk.END, message)
         self.last_published_at.set(datetime.now().strftime("%H:%M:%S.%f")[:-3])
         if self._last_publish_future is not None and not self._last_publish_future.done():
             self.last_publish_result.set("publish pending")
             return
-        future = self.websocket.publish(state)
+        future = self.websocket.publish_message(message)
         if future is None:
             self.last_publish_result.set("generated")
             return
@@ -440,6 +463,19 @@ class GestureMonitorGui:
             self.last_publish_result.set(f"sent to {sent_count} client(s)")
         else:
             self.last_publish_result.set("generated")
+
+    def _update_fps(self, now: float) -> None:
+        if self._last_fps_at is None:
+            self._last_fps_at = now
+            self.fps.set("0.0")
+            return
+        elapsed = now - self._last_fps_at
+        self._last_fps_at = now
+        if elapsed <= 0:
+            return
+        current = 1.0 / elapsed
+        self._fps = current if self._fps <= 0 else (self._fps * 0.8) + (current * 0.2)
+        self.fps.set(f"{self._fps:.1f}")
 
     def _show_preview(self, frame, hand_landmarks, state: GestureState, hold, mirrored: bool) -> None:
         display = cv2.flip(frame, 1) if mirrored else frame.copy()

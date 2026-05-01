@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mediapipe_sword_sign import SwordSignDetector, UnsafeModelError
+from mediapipe_sword_sign import GESTURE_SWORD_SIGN, GestureHoldTracker, SwordSignDetector, UnsafeModelError
 from mediapipe_sword_sign.adapters import WebSocketGestureBroadcaster
 
 
@@ -68,6 +68,16 @@ def parse_interval(value: str) -> float:
     return parsed
 
 
+def parse_non_negative_float(value: str, *, name: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be a number") from exc
+    if not isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError(f"{name} must be 0 or greater")
+    return parsed
+
+
 def parse_max_clients(value: str) -> int:
     return parse_positive_int(value, name="--max-clients")
 
@@ -78,6 +88,14 @@ def parse_max_message_bytes(value: str) -> int:
 
 def parse_max_queue(value: str) -> int:
     return parse_positive_int(value, name="--max-queue")
+
+
+def parse_hold_seconds(value: str) -> float:
+    return parse_non_negative_float(value, name="--hold-seconds")
+
+
+def parse_release_grace_seconds(value: str) -> float:
+    return parse_non_negative_float(value, name="--release-grace-seconds")
 
 
 def resolve_ws_auth_token(auth_token_env: str | None) -> str | None:
@@ -115,6 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-sha256")
     parser.add_argument("--allow-untrusted-model", action="store_true")
     parser.add_argument("--interval", type=parse_interval, default=1 / 30)
+    parser.add_argument("--hold-seconds", type=parse_hold_seconds, default=0.5)
+    parser.add_argument("--release-grace-seconds", type=parse_release_grace_seconds, default=0.1)
     parser.add_argument("--auth-token-env", default="GESTURE_WS_TOKEN")
     parser.add_argument("--allowed-origin", action="append", dest="allowed_origins")
     parser.add_argument("--max-clients", type=parse_max_clients, default=8)
@@ -149,10 +169,23 @@ async def run(args: argparse.Namespace) -> None:
                 allow_untrusted_model=args.allow_untrusted_model,
                 threshold=args.threshold,
             ) as detector:
+                hold_tracker = GestureHoldTracker(
+                    target=GESTURE_SWORD_SIGN,
+                    hold_seconds=args.hold_seconds,
+                    release_grace_seconds=args.release_grace_seconds,
+                )
+                sequence = 0
                 while True:
                     success, frame = cap.read()
                     if success:
-                        await broadcaster.publish(detector.detect(frame, flip=True))
+                        state = detector.detect(frame, flip=True)
+                        stable = hold_tracker.update(state)
+                        sequence += 1
+                        await broadcaster.publish(
+                            state,
+                            sequence=sequence,
+                            stable=stable,
+                        )
                     await asyncio.sleep(args.interval)
     finally:
         cap.release()

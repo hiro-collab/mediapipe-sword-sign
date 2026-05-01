@@ -7,6 +7,8 @@ from types import TracebackType
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlsplit
 
+from mediapipe_sword_sign.payloads import gesture_state_json
+from mediapipe_sword_sign.temporal import GestureHoldState
 from mediapipe_sword_sign.types import GestureState
 
 
@@ -49,6 +51,8 @@ class WebSocketGestureBroadcaster:
         )
         self.max_queue = _validate_optional_positive_int(max_queue, name="max_queue")
         self.clients: set[Any] = set()
+        self.client_addresses: dict[Any, str] = {}
+        self.last_client_address: str | None = None
         self._server: Any | None = None
 
     @property
@@ -85,12 +89,23 @@ class WebSocketGestureBroadcaster:
                     with suppress(Exception):
                         await result
         self.clients.clear()
+        self.client_addresses.clear()
 
-    async def publish(self, state: GestureState) -> None:
+    async def publish(
+        self,
+        state: GestureState,
+        *,
+        sequence: int | None = None,
+        stable: GestureHoldState | None = None,
+    ) -> None:
+        await self.publish_message(
+            gesture_state_json(state, sequence=sequence, stable=stable),
+        )
+
+    async def publish_message(self, message: str) -> None:
         if not self.clients:
             return
 
-        message = state.to_json()
         clients = list(self.clients)
         results = await asyncio.gather(
             *(client.send(message) for client in clients),
@@ -100,6 +115,7 @@ class WebSocketGestureBroadcaster:
         for client, result in zip(clients, results):
             if isinstance(result, Exception):
                 self.clients.discard(client)
+                self.client_addresses.pop(client, None)
 
     async def _handler(self, websocket: Any, path: str | None = None) -> None:
         if not self._is_authorized(websocket, path):
@@ -111,11 +127,15 @@ class WebSocketGestureBroadcaster:
             return
 
         self.clients.add(websocket)
+        client_address = _client_address(websocket)
+        self.client_addresses[websocket] = client_address
+        self.last_client_address = client_address
         try:
             async for _message in websocket:
                 pass
         finally:
             self.clients.discard(websocket)
+            self.client_addresses.pop(websocket, None)
 
     def _is_authorized(self, websocket: Any, path: str | None) -> bool:
         if self.auth_token is None:
@@ -239,6 +259,22 @@ def _request_path(websocket: Any) -> str:
         if path is not None:
             return str(path)
     return str(getattr(websocket, "path", ""))
+
+
+def _client_address(websocket: Any) -> str:
+    remote_address = getattr(websocket, "remote_address", None)
+    if isinstance(remote_address, tuple) and remote_address:
+        host = str(remote_address[0])
+        if len(remote_address) >= 2:
+            return f"{host}:{remote_address[1]}"
+        return host
+    if remote_address is not None:
+        return str(remote_address)
+
+    remote = getattr(websocket, "remote", None)
+    if remote is not None:
+        return str(remote)
+    return "unknown"
 
 
 def _header(headers: Any, name: str) -> str | None:

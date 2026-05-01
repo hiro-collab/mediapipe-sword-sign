@@ -3,6 +3,7 @@ import json
 import unittest
 
 from mediapipe_sword_sign.adapters import UdpGesturePublisher, WebSocketGestureBroadcaster
+from mediapipe_sword_sign.temporal import GestureHoldState
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
 
@@ -51,6 +52,7 @@ class FailingWebSocketClient:
 class ClosingWebSocketClient:
     def __init__(self):
         self.closed = []
+        self.remote_address = ("127.0.0.1", 54321)
 
     async def close(self, *, code, reason):
         self.closed.append((code, reason))
@@ -126,6 +128,43 @@ class AdapterTests(unittest.TestCase):
 
             self.assertEqual(len(client.messages), 1)
             self.assertEqual(json.loads(client.messages[0])["primary"], "sword_sign")
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_can_publish_extended_payload(self):
+        async def run():
+            client = FakeWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster()
+            broadcaster.clients.add(client)
+            stable = GestureHoldState(
+                target="sword_sign",
+                current_active=True,
+                active=True,
+                changed=True,
+                activated=True,
+                released=False,
+                held_for=0.7,
+                confidence=0.95,
+            )
+
+            await broadcaster.publish(make_state(), sequence=3, stable=stable)
+
+            payload = json.loads(client.messages[0])
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["sequence"], 3)
+            self.assertTrue(payload["stable"]["gestures"]["sword_sign"]["active"])
+            self.assertTrue(payload["gestures"]["sword_sign"]["active"])
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_tracks_last_client_address(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster()
+
+            await broadcaster._handler(client, "/")
+
+            self.assertEqual(broadcaster.last_client_address, "127.0.0.1:54321")
 
         asyncio.run(run())
 
