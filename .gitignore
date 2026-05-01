@@ -1,4 +1,5 @@
 .venv/
+.vrm/
 .tmp-envs/
 __pycache__/
 .pytest_cache/

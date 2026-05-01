@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sys
 import threading
 import time
@@ -154,6 +156,9 @@ class GestureMonitorGui:
         self._sequence = 0
         self._last_fps_at: float | None = None
         self._fps = 0.0
+        self._status_path = self._resolve_status_path()
+        self._last_status_write_at = 0.0
+        self._last_event_message = "-"
 
         self.capture_state = tk.StringVar(value="Stopped")
         self.websocket_state = tk.StringVar(value="Stopped")
@@ -170,7 +175,14 @@ class GestureMonitorGui:
         self.last_publish_result = tk.StringVar(value="-")
 
         self._build()
+        self._write_status_snapshot(force=True)
         self._tick()
+
+    def _resolve_status_path(self) -> Path:
+        state_dir = os.environ.get("HOME_CONTROL_STACK_STATE_DIR")
+        if state_dir:
+            return Path(state_dir) / "mediapipe-status.json"
+        return PROJECT_ROOT.parent / ".cache" / "home-control-stack" / "mediapipe-status.json"
 
     def _build(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -315,6 +327,9 @@ class GestureMonitorGui:
             )
         except Exception as exc:
             self.stop()
+            self.capture_state.set("Start failed")
+            self._last_event_message = safe_start_error(exc)
+            self._write_status_snapshot(force=True)
             messagebox.showerror("Start failed", safe_start_error(exc))
             return
 
@@ -328,6 +343,7 @@ class GestureMonitorGui:
         self.capture_state.set("Running")
         self.websocket_state.set(f"Listening on ws://{host}:{int(self.port.get())}")
         self._append_event("started")
+        self._write_status_snapshot(force=True)
 
     def stop(self) -> None:
         self.running = False
@@ -352,6 +368,7 @@ class GestureMonitorGui:
         self.stable_state.set("inactive")
         self.held_for.set("0.00s")
         self._destroy_preview()
+        self._write_status_snapshot(force=True)
 
     def close(self) -> None:
         self.stop()
@@ -363,6 +380,7 @@ class GestureMonitorGui:
         self.client_count.set(str(self.websocket.client_count))
         self.last_client_address.set(self.websocket.last_client_address)
         self._finish_publish_if_ready()
+        self._write_status_snapshot()
         self.root.after(15, self._tick)
 
     def _update_frame(self) -> None:
@@ -379,6 +397,8 @@ class GestureMonitorGui:
         success, frame = self.cap.read()
         if not success:
             self.capture_state.set("Frame read failed")
+            self._last_event_message = "frame read failed"
+            self._write_status_snapshot(force=True)
             return
 
         mirrored = self.mirror_preview.get()
@@ -463,6 +483,7 @@ class GestureMonitorGui:
             self.last_publish_result.set(f"sent to {sent_count} client(s)")
         else:
             self.last_publish_result.set("generated")
+        self._write_status_snapshot(force=True)
 
     def _update_fps(self, now: float) -> None:
         if self._last_fps_at is None:
@@ -541,15 +562,58 @@ class GestureMonitorGui:
 
     def _append_event(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
+        self._last_event_message = message
         self.event_log.insert(tk.END, f"{timestamp} {message}")
         if self.event_log.size() > 200:
             self.event_log.delete(0)
         self.event_log.see(tk.END)
+        self._write_status_snapshot(force=True)
 
     def _sync_labels(self) -> None:
         self.threshold_label.configure(text=f"{self.threshold.get():.2f}")
         self.hold_label.configure(text=f"{self.hold_seconds.get():.2f}s")
         self.grace_label.configure(text=f"{self.release_grace_seconds.get():.2f}s")
+
+    def _write_status_snapshot(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_status_write_at < 0.5:
+            return
+        self._last_status_write_at = now
+
+        payload = {
+            "type": "mediapipe_gui_status",
+            "updated_at": datetime.now().isoformat(timespec="milliseconds"),
+            "running": self.running,
+            "camera_index": self.camera_index.get(),
+            "model_path": self.model_path.get(),
+            "threshold": round(float(self.threshold.get()), 3),
+            "hold_seconds": round(float(self.hold_seconds.get()), 3),
+            "release_grace_seconds": round(float(self.release_grace_seconds.get()), 3),
+            "host": self.host.get(),
+            "port": int(self.port.get()),
+            "capture": self.capture_state.get(),
+            "websocket": self.websocket_state.get(),
+            "clients": self.client_count.get(),
+            "last_client_address": self.last_client_address.get(),
+            "fps": self.fps.get(),
+            "primary_gesture": self.primary_gesture.get(),
+            "best_gesture": self.best_gesture.get(),
+            "sword_raw_state": self.sword_raw_state.get(),
+            "sword_confidence": self.sword_confidence.get(),
+            "stable_state": self.stable_state.get(),
+            "held_for": self.held_for.get(),
+            "last_published_at": self.last_published_at.get(),
+            "last_publish_result": self.last_publish_result.get(),
+            "last_event": self._last_event_message,
+        }
+
+        try:
+            self._status_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._status_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp_path.replace(self._status_path)
+        except Exception:
+            pass
 
 
 def main() -> None:
