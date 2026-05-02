@@ -1,5 +1,8 @@
 .venv/
+.vrm/
+.tmp-envs/
 __pycache__/
+.pytest_cache/
 *.csv
 *.pkl
 *.log
@@ -7,3 +10,4 @@ __pycache__/
 .env.*
 !.env.example
 .uv/
+.uv-cache/

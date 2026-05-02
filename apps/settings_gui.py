@@ -12,12 +12,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mediapipe_sword_sign import GESTURE_SWORD_SIGN, GESTURE_VICTORY, SwordSignDetector
+from mediapipe_sword_sign import (
+    GESTURE_SWORD_SIGN,
+    GESTURE_VICTORY,
+    SwordSignDetector,
+    UnsafeModelError,
+)
 from mediapipe_sword_sign.temporal import GestureHoldTracker
 from mediapipe_sword_sign.types import DISPLAY_NAMES
 
 
 PREVIEW_WINDOW = "Gesture Settings Preview"
+
+
+def safe_start_error(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "モデルファイルが見つかりません。"
+    if isinstance(exc, UnsafeModelError):
+        return "モデルファイルを安全に検証できませんでした。SHA-256を指定するか、信頼できるモデルだけを選択してください。"
+    if isinstance(exc, RuntimeError) and "camera not available" in str(exc):
+        return "カメラを開けませんでした。カメラ番号と利用中のアプリを確認してください。"
+    if isinstance(exc, ValueError):
+        return str(exc)
+    return "起動に失敗しました。設定を確認してください。"
 
 
 class GestureSettingsGui:
@@ -152,7 +169,7 @@ class GestureSettingsGui:
                 raise RuntimeError(f"camera not available: {self.camera_index.get()}")
         except Exception as exc:
             self.stop()
-            messagebox.showerror("Start failed", str(exc))
+            messagebox.showerror("Start failed", safe_start_error(exc))
             return
 
         self.hold_tracker.reset()

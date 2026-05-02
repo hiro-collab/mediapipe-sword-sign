@@ -3,6 +3,7 @@ import json
 import unittest
 
 from mediapipe_sword_sign.adapters import UdpGesturePublisher, WebSocketGestureBroadcaster
+from mediapipe_sword_sign.temporal import GestureHoldState
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
 
@@ -51,6 +52,7 @@ class FailingWebSocketClient:
 class ClosingWebSocketClient:
     def __init__(self):
         self.closed = []
+        self.remote_address = ("127.0.0.1", 54321)
 
     async def close(self, *, code, reason):
         self.closed.append((code, reason))
@@ -129,6 +131,43 @@ class AdapterTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_websocket_broadcaster_can_publish_extended_payload(self):
+        async def run():
+            client = FakeWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster()
+            broadcaster.clients.add(client)
+            stable = GestureHoldState(
+                target="sword_sign",
+                current_active=True,
+                active=True,
+                changed=True,
+                activated=True,
+                released=False,
+                held_for=0.7,
+                confidence=0.95,
+            )
+
+            await broadcaster.publish(make_state(), sequence=3, stable=stable)
+
+            payload = json.loads(client.messages[0])
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["sequence"], 3)
+            self.assertTrue(payload["stable"]["gestures"]["sword_sign"]["active"])
+            self.assertTrue(payload["gestures"]["sword_sign"]["active"])
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_tracks_last_client_address(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster()
+
+            await broadcaster._handler(client, "/")
+
+            self.assertEqual(broadcaster.last_client_address, "127.0.0.1:54321")
+
+        asyncio.run(run())
+
     def test_websocket_broadcaster_removes_failed_clients(self):
         async def run():
             client = FailingWebSocketClient()
@@ -145,12 +184,47 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             WebSocketGestureBroadcaster(host="0.0.0.0")
 
+    def test_websocket_broadcaster_normalizes_empty_auth_token(self):
+        broadcaster = WebSocketGestureBroadcaster(auth_token=" ")
+
+        self.assertIsNone(broadcaster.auth_token)
+
+    def test_websocket_broadcaster_rejects_invalid_runtime_limits(self):
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(port=0)
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(max_clients=0)
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(max_message_bytes=0)
+
+    def test_websocket_broadcaster_rejects_wildcard_origin(self):
+        with self.assertRaises(ValueError):
+            WebSocketGestureBroadcaster(allowed_origins=["*"])
+
+    def test_websocket_broadcaster_accepts_single_origin_string(self):
+        broadcaster = WebSocketGestureBroadcaster(allowed_origins="http://localhost:3000")
+
+        self.assertEqual(broadcaster.allowed_origins, ["http://localhost:3000"])
+
     def test_websocket_broadcaster_rejects_wrong_token(self):
         async def run():
             client = ClosingWebSocketClient()
             broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
 
             await broadcaster._handler(client, "/?token=wrong")
+
+            self.assertEqual(client.closed, [(1008, "unauthorized")])
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_rejects_query_parameter_flood(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
+            query = "&".join(f"unused{i}=1" for i in range(9))
+
+            await broadcaster._handler(client, f"/?{query}&token=secret")
 
             self.assertEqual(client.closed, [(1008, "unauthorized")])
             self.assertNotIn(client, broadcaster.clients)

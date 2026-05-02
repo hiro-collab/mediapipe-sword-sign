@@ -49,6 +49,29 @@ class SwordSignDetectorTests(unittest.TestCase):
         self.assertIsNone(state.primary)
         self.assertFalse(state.gesture("none").active)
 
+    def test_detector_rejects_threshold_outside_probability_range(self):
+        with self.assertRaises(ValueError):
+            SwordSignDetector(
+                model=FakeModel([0.91, 0.04, 0.05]),
+                threshold=1.1,
+            )
+
+    def test_detector_rejects_invalid_model_complexity(self):
+        with self.assertRaises(ValueError):
+            SwordSignDetector(
+                model=FakeModel([0.91, 0.04, 0.05]),
+                model_complexity=2,
+            )
+
+    def test_detector_threshold_setter_rejects_invalid_values(self):
+        detector = SwordSignDetector(
+            model=FakeModel([0.91, 0.04, 0.05]),
+            threshold=0.9,
+        )
+
+        with self.assertRaises(ValueError):
+            detector.threshold = float("nan")
+
 
 if __name__ == "__main__":
     unittest.main()

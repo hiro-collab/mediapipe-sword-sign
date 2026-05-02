@@ -206,7 +206,7 @@ def format_bool(value: bool) -> str:
 
 
 def format_json(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
 
 
 def print_json(payload: Mapping[str, object]) -> None:
