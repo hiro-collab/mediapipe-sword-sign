@@ -156,6 +156,10 @@ class WebSocketGestureBroadcaster:
         await self.stop()
 
 
+class WebSocketTopicBroadcaster(WebSocketGestureBroadcaster):
+    """Generic topic broadcaster; kept separate from the gesture name for camera-hub use."""
+
+
 def _load_serve():
     try:
         from websockets.asyncio.server import serve

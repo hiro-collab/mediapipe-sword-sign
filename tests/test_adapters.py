@@ -2,7 +2,11 @@ import asyncio
 import json
 import unittest
 
-from mediapipe_sword_sign.adapters import UdpGesturePublisher, WebSocketGestureBroadcaster
+from mediapipe_sword_sign.adapters import (
+    UdpGesturePublisher,
+    WebSocketGestureBroadcaster,
+    WebSocketTopicBroadcaster,
+)
 from mediapipe_sword_sign.temporal import GestureHoldState
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
@@ -128,6 +132,18 @@ class AdapterTests(unittest.TestCase):
 
             self.assertEqual(len(client.messages), 1)
             self.assertEqual(json.loads(client.messages[0])["primary"], "sword_sign")
+
+        asyncio.run(run())
+
+    def test_topic_broadcaster_alias_can_publish_generic_messages(self):
+        async def run():
+            client = FakeWebSocketClient()
+            broadcaster = WebSocketTopicBroadcaster()
+            broadcaster.clients.add(client)
+
+            await broadcaster.publish_message('{"topic":"/camera/status"}')
+
+            self.assertEqual(client.messages, ['{"topic":"/camera/status"}'])
 
         asyncio.run(run())
 
