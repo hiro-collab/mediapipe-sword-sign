@@ -3,8 +3,11 @@ import unittest
 
 from apps.serve_camera_hub import (
     build_parser,
+    CameraFrameSnapshot,
     camera_status_payload,
+    capture_status_properties,
     compressed_image_binary_payload,
+    copy_processor_metrics,
     due,
     FfmpegPipeCapture,
     fourcc_to_text,
@@ -178,6 +181,57 @@ class ServeCameraHubTests(unittest.TestCase):
         self.assertEqual(payload["format"], "jpeg")
         self.assertEqual(payload["transport"], "binary")
         self.assertEqual(payload["byte_length"], 1234)
+
+    def test_camera_status_payload_accepts_processor_metrics(self):
+        payload = camera_status_payload(
+            camera_index=0,
+            frame_number=42,
+            fps=29.97,
+            processors={
+                "sword_sign": {
+                    "enabled": True,
+                    "last_frame_id": 42,
+                    "inference_ms": 12.345,
+                    "publish_age_ms": 23.456,
+                }
+            },
+        )
+
+        sword = payload["processors"]["sword_sign"]
+        self.assertEqual(sword["last_frame_id"], 42)
+        self.assertAlmostEqual(sword["inference_ms"], 12.345)
+        self.assertAlmostEqual(sword["publish_age_ms"], 23.456)
+
+    def test_capture_status_properties_adds_latency_diagnostics(self):
+        class Camera:
+            def actual_properties(self):
+                return {"backend": "ffmpeg-pipe", "width": 640, "height": 480}
+
+        snapshot = CameraFrameSnapshot(
+            frame=None,
+            frame_number=10,
+            stamp=100.0,
+            fps=30.0,
+            frame_read_ok=True,
+            read_latency_ms=4.25,
+            read_failures=2,
+        )
+
+        capture = capture_status_properties(Camera(), snapshot, now=100.125)
+
+        self.assertEqual(capture["backend"], "ffmpeg-pipe")
+        self.assertEqual(capture["frame_age_ms"], 125.0)
+        self.assertEqual(capture["read_latency_ms"], 4.25)
+        self.assertEqual(capture["read_failures"], 2)
+        self.assertEqual(capture["read_fps"], 30.0)
+
+    def test_copy_processor_metrics_returns_independent_dicts(self):
+        metrics = {"sword_sign": {"enabled": True, "inference_ms": 1.0}}
+
+        copied = copy_processor_metrics(metrics)
+        copied["sword_sign"]["inference_ms"] = 2.0
+
+        self.assertEqual(metrics["sword_sign"]["inference_ms"], 1.0)
 
     def test_normalized_landmarks_payload_serializes_points(self):
         class Landmark:

@@ -244,6 +244,7 @@ def camera_status_payload(
     frame_read_ok: bool = True,
     capture: dict[str, object] | None = None,
     camera_source: str | None = None,
+    processors: dict[str, object] | None = None,
 ) -> dict[str, object]:
     camera = {
         "selected_index": camera_index,
@@ -259,7 +260,7 @@ def camera_status_payload(
         "camera": camera,
         "frame_id": frame_number,
         "fps": round(fps, 3),
-        "processors": {
+        "processors": processors if processors is not None else {
             "sword_sign": {"enabled": True},
         },
     }
@@ -531,6 +532,8 @@ class CameraFrameSnapshot:
     stamp: float
     fps: float
     frame_read_ok: bool
+    read_latency_ms: float
+    read_failures: int
 
 
 class FpsTracker:
@@ -590,6 +593,8 @@ class LatestFrameCamera:
         self._stamp = time.time()
         self._fps = 0.0
         self._frame_read_ok = False
+        self._read_latency_ms = 0.0
+        self._read_failures = 0
 
     def actual_properties(self) -> dict[str, object]:
         return {
@@ -632,20 +637,27 @@ class LatestFrameCamera:
                 stamp=self._stamp,
                 fps=self._fps,
                 frame_read_ok=self._frame_read_ok,
+                read_latency_ms=self._read_latency_ms,
+                read_failures=self._read_failures,
             )
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            read_started = time.monotonic()
             success, frame = self.cap.read()
+            read_latency_ms = (time.monotonic() - read_started) * 1000.0
             stamp = time.time()
             now = time.monotonic()
             with self._lock:
-                self._stamp = stamp
                 self._frame_read_ok = bool(success)
+                self._read_latency_ms = read_latency_ms
                 if success:
+                    self._stamp = stamp
                     self._frame_number += 1
                     self._frame = frame
                     self._fps = self._fps_tracker.update(now)
+                else:
+                    self._read_failures += 1
 
             if success:
                 if self.interval > 0:
@@ -715,6 +727,31 @@ def due(last_published_at: float | None, interval: float, now: float) -> bool:
     return interval > 0 and (
         last_published_at is None or now - last_published_at >= interval
     )
+
+
+def capture_status_properties(
+    camera: LatestFrameCamera,
+    snapshot: CameraFrameSnapshot,
+    *,
+    now: float | None = None,
+) -> dict[str, object]:
+    timestamp = time.time() if now is None else now
+    capture = camera.actual_properties()
+    capture.update(
+        {
+            "frame_age_ms": round(max(0.0, timestamp - snapshot.stamp) * 1000.0, 3),
+            "read_latency_ms": round(snapshot.read_latency_ms, 3),
+            "read_failures": int(snapshot.read_failures),
+            "read_fps": round(snapshot.fps, 3),
+        }
+    )
+    return capture
+
+
+def copy_processor_metrics(
+    metrics: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    return {name: dict(values) for name, values in metrics.items()}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -842,9 +879,13 @@ async def publish_status_loop(
     camera: LatestFrameCamera,
     broadcaster: WebSocketTopicBroadcaster,
     args: argparse.Namespace,
+    processor_metrics: dict[str, dict[str, object]],
+    processor_metrics_lock: asyncio.Lock,
 ) -> None:
     while True:
         snapshot = camera.snapshot(copy_frame=False)
+        async with processor_metrics_lock:
+            processors = copy_processor_metrics(processor_metrics)
         await broadcaster.publish_message(
             topic_json(
                 CAMERA_STATUS_TOPIC,
@@ -854,10 +895,11 @@ async def publish_status_loop(
                     frame_number=snapshot.frame_number,
                     fps=snapshot.fps,
                     frame_read_ok=snapshot.frame_read_ok,
-                    capture=camera.actual_properties(),
+                    capture=capture_status_properties(camera, snapshot),
                     camera_source=(
                         args.camera_source if args.camera_source is not None else None
                     ),
+                    processors=processors,
                 ),
                 sequence=snapshot.frame_number,
                 stamp=snapshot.stamp,
@@ -926,6 +968,8 @@ async def publish_gesture_loop(
     camera: LatestFrameCamera,
     broadcaster: WebSocketTopicBroadcaster,
     args: argparse.Namespace,
+    processor_metrics: dict[str, dict[str, object]],
+    processor_metrics_lock: asyncio.Lock,
 ) -> None:
     loop = asyncio.get_running_loop()
     runner = SwordSignInferenceRunner(args)
@@ -952,6 +996,7 @@ async def publish_gesture_loop(
                 await asyncio.sleep(0.005)
                 continue
 
+            inference_started = time.monotonic()
             gesture_state, stable, landmarks = await loop.run_in_executor(
                 executor,
                 functools.partial(
@@ -960,6 +1005,7 @@ async def publish_gesture_loop(
                     stamp=snapshot.stamp,
                 ),
             )
+            inference_ms = (time.monotonic() - inference_started) * 1000.0
             payload = gesture_state_payload(
                 gesture_state,
                 sequence=snapshot.frame_number,
@@ -981,6 +1027,15 @@ async def publish_gesture_loop(
                     frame_id=args.frame_id,
                 )
             )
+            publish_age_ms = max(0.0, time.time() - snapshot.stamp) * 1000.0
+            async with processor_metrics_lock:
+                processor_metrics["sword_sign"] = {
+                    "enabled": True,
+                    "last_frame_id": snapshot.frame_number,
+                    "inference_ms": round(inference_ms, 3),
+                    "publish_age_ms": round(publish_age_ms, 3),
+                    "last_published_at": round(time.time(), 6),
+                }
             last_inferred_frame = snapshot.frame_number
             last_inferred_at = time.monotonic()
     finally:
@@ -1018,6 +1073,10 @@ async def run(args: argparse.Namespace) -> None:
         ffmpeg_path=args.ffmpeg_path,
     )
     tasks: list[asyncio.Task[None]] = []
+    processor_metrics: dict[str, dict[str, object]] = {
+        "sword_sign": {"enabled": True},
+    }
+    processor_metrics_lock = asyncio.Lock()
 
     try:
         camera.start()
@@ -1041,6 +1100,8 @@ async def run(args: argparse.Namespace) -> None:
                         camera=camera,
                         broadcaster=broadcaster,
                         args=args,
+                        processor_metrics=processor_metrics,
+                        processor_metrics_lock=processor_metrics_lock,
                     )
                 )
             )
@@ -1051,6 +1112,8 @@ async def run(args: argparse.Namespace) -> None:
                             camera=camera,
                             broadcaster=broadcaster,
                             args=args,
+                            processor_metrics=processor_metrics,
+                            processor_metrics_lock=processor_metrics_lock,
                         )
                     )
                 )

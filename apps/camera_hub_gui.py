@@ -59,6 +59,11 @@ class CameraStatusSummary:
     frame_read_ok: bool | None
     fps: float | None
     frame_id: int | None
+    frame_age_ms: float | None
+    read_latency_ms: float | None
+    read_failures: int | None
+    gesture_inference_ms: float | None
+    gesture_publish_age_ms: float | None
 
 
 class HubTopicRuntime:
@@ -245,6 +250,11 @@ class CameraHubGui:
         self.camera_state = tk.StringVar(value="-")
         self.frame_state = tk.StringVar(value="-")
         self.fps = tk.StringVar(value="-")
+        self.frame_age = tk.StringVar(value="-")
+        self.read_latency = tk.StringVar(value="-")
+        self.read_failures = tk.StringVar(value="-")
+        self.gesture_inference = tk.StringVar(value="-")
+        self.gesture_publish_age = tk.StringVar(value="-")
         self.primary_gesture = tk.StringVar(value="-")
         self.best_gesture = tk.StringVar(value="-")
         self.target_state = tk.StringVar(value="-")
@@ -293,6 +303,11 @@ class CameraHubGui:
             ("Camera", self.camera_state),
             ("Frame", self.frame_state),
             ("FPS", self.fps),
+            ("Frame Age", self.frame_age),
+            ("Read Latency", self.read_latency),
+            ("Read Failures", self.read_failures),
+            ("Gesture Inference", self.gesture_inference),
+            ("Gesture Publish Age", self.gesture_publish_age),
             ("Primary", self.primary_gesture),
             ("Best", self.best_gesture),
             ("Target", self.target_state),
@@ -479,6 +494,13 @@ class CameraHubGui:
         self.camera_state.set(f"{index} / {opened} / {read_ok}")
         self.frame_state.set("-" if summary.frame_id is None else str(summary.frame_id))
         self.fps.set("-" if summary.fps is None else f"{summary.fps:.1f}")
+        self.frame_age.set(format_ms(summary.frame_age_ms))
+        self.read_latency.set(format_ms(summary.read_latency_ms))
+        self.read_failures.set(
+            "-" if summary.read_failures is None else str(summary.read_failures)
+        )
+        self.gesture_inference.set(format_ms(summary.gesture_inference_ms))
+        self.gesture_publish_age.set(format_ms(summary.gesture_publish_age_ms))
 
     def _show_preview(self) -> None:
         frame = self.latest_frame
@@ -590,12 +612,26 @@ def summarize_gesture_payload(
 
 def summarize_camera_status(payload: dict[str, Any]) -> CameraStatusSummary:
     camera = payload.get("camera") if isinstance(payload.get("camera"), dict) else {}
+    capture = payload.get("capture") if isinstance(payload.get("capture"), dict) else {}
+    processors = (
+        payload.get("processors") if isinstance(payload.get("processors"), dict) else {}
+    )
+    sword_processor = (
+        processors.get("sword_sign")
+        if isinstance(processors.get("sword_sign"), dict)
+        else {}
+    )
     return CameraStatusSummary(
         camera_index=_optional_int(camera.get("selected_index")),
         opened=_optional_bool(camera.get("opened")),
         frame_read_ok=_optional_bool(camera.get("frame_read_ok")),
         fps=_optional_float(payload.get("fps")),
         frame_id=_optional_int(payload.get("frame_id")),
+        frame_age_ms=_optional_float(capture.get("frame_age_ms")),
+        read_latency_ms=_optional_float(capture.get("read_latency_ms")),
+        read_failures=_optional_int(capture.get("read_failures")),
+        gesture_inference_ms=_optional_float(sword_processor.get("inference_ms")),
+        gesture_publish_age_ms=_optional_float(sword_processor.get("publish_age_ms")),
     )
 
 
@@ -707,6 +743,10 @@ def _float(value: object, *, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def format_ms(value: float | None) -> str:
+    return "-" if value is None else f"{value:.1f} ms"
 
 
 def _optional_float(value: object) -> float | None:

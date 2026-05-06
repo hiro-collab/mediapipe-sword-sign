@@ -64,6 +64,17 @@ class CameraHubGuiTests(unittest.TestCase):
                     "opened": True,
                     "frame_read_ok": False,
                 },
+                "capture": {
+                    "frame_age_ms": 34.5,
+                    "read_latency_ms": 2.25,
+                    "read_failures": 3,
+                },
+                "processors": {
+                    "sword_sign": {
+                        "inference_ms": 11.5,
+                        "publish_age_ms": 46.75,
+                    }
+                },
             }
         )
 
@@ -72,6 +83,11 @@ class CameraHubGuiTests(unittest.TestCase):
         self.assertFalse(summary.frame_read_ok)
         self.assertAlmostEqual(summary.fps, 29.97)
         self.assertEqual(summary.frame_id, 12)
+        self.assertAlmostEqual(summary.frame_age_ms, 34.5)
+        self.assertAlmostEqual(summary.read_latency_ms, 2.25)
+        self.assertEqual(summary.read_failures, 3)
+        self.assertAlmostEqual(summary.gesture_inference_ms, 11.5)
+        self.assertAlmostEqual(summary.gesture_publish_age_ms, 46.75)
 
     def test_decode_compressed_image_decodes_jpeg_frame(self):
         frame = np.full((12, 16, 3), 128, dtype=np.uint8)

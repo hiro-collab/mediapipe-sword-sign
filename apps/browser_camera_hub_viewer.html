@@ -321,6 +321,11 @@
           <dt>Status Age</dt><dd id="statusAge">-</dd>
           <dt>Camera</dt><dd id="camera">-</dd>
           <dt>Capture FPS</dt><dd id="captureFps">-</dd>
+          <dt>Frame Age</dt><dd id="frameAge">-</dd>
+          <dt>Read Latency</dt><dd id="readLatency">-</dd>
+          <dt>Read Failures</dt><dd id="readFailures">-</dd>
+          <dt>Gesture Inference</dt><dd id="gestureInference">-</dd>
+          <dt>Gesture Publish Age</dt><dd id="gesturePublishAge">-</dd>
           <dt>Frame</dt><dd id="frame">-</dd>
           <dt>Last Topic</dt><dd id="lastTopic">-</dd>
           <dt>Last Message</dt><dd id="lastMessage">-</dd>
@@ -428,7 +433,8 @@
     }
 
     function formatMs(ms) {
-      return ms == null ? "-" : `${ms.toFixed(1)}ms`;
+      const value = Number(ms);
+      return Number.isFinite(value) ? `${value.toFixed(1)}ms` : "-";
     }
 
     function percentile(values, ratio) {
@@ -668,6 +674,12 @@
       const openState = camera.opened ? "open" : "closed";
       setText("camera", `${camera.selected_index ?? "-"} / ${openState} / ${readState}`);
       setText("captureFps", payload.fps == null ? "-" : Number(payload.fps).toFixed(1));
+      setText("frameAge", formatMs(capture.frame_age_ms));
+      setText("readLatency", formatMs(capture.read_latency_ms));
+      setText("readFailures", capture.read_failures ?? "-");
+      const swordProcessor = payload.processors && payload.processors.sword_sign || {};
+      setText("gestureInference", formatMs(swordProcessor.inference_ms));
+      setText("gesturePublishAge", formatMs(swordProcessor.publish_age_ms));
       setText("frame", payload.frame_id);
       setText("statusAge", formatAge(age));
       $("fpsPill").textContent = payload.fps == null ? "capture - fps" : `capture ${Number(payload.fps).toFixed(1)} fps`;

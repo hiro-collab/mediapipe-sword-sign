@@ -345,6 +345,127 @@ landmarksが映像より遅れる問題を避けやすくなります。
 FFmpegは、WindowsのUSBカメラをDirectShowで開いてMediaMTXへpublishするために使います。
 `ffprobe` は `cam0` streamが実際に読めるか確認するために使います。
 
+## Low-Latency Hub Policy
+
+このモジュールが提唱する低遅延構成は、**映像配信と推論を分けつつ、Camera Hubが常に最新寄りのframeを読む** ことです。
+ここでいう低遅延は「ゼロ遅延」ではなく、gesture/landmarksがブラウザ映像に目視で遅れて見えないことを目標にします。
+
+推奨構成です。
+
+```mermaid
+flowchart LR
+    Camera["USB Camera"]
+    Publish["FFmpeg publish<br/>DirectShow -> H.264"]
+    MediaMTX["MediaMTX<br/>video fan-out"]
+    Browser["Browser clients<br/>WebRTC/HLS video"]
+    Pipe["FFmpeg pipe reader<br/>RTSP -> bgr24 rawvideo"]
+    Hub["Camera Hub<br/>processors + topic envelope"]
+    Topics["WebSocket topics<br/>gesture/status/landmarks"]
+
+    Camera --> Publish --> MediaMTX
+    MediaMTX -->|"WebRTC / HLS"| Browser
+    MediaMTX -->|"RTSP"| Pipe --> Hub --> Topics --> Browser
+```
+
+この構成で守る原則です。
+
+- **MediaMTXは映像配信の担当**です。複数ブラウザへ映像を配る仕事をPythonに持たせません。
+- **Camera Hubは推論用frameの担当**です。MediaMTXのRTSPを読み、gestureやroom lightなどのprocessorを1回だけ動かします。
+- **Camera HubのRTSP readerは `ffmpeg-pipe` を既定にします。** OpenCV `VideoCapture(rtsp://...)` は内部バッファで古いframeを返すことがあるため、低遅延overlay用途では比較用・fallback扱いにします。
+- **GUIはカメラを直接開きません。** GUIはMediaMTX映像とCamera Hub topicsを購読するだけにします。
+- **本番ではPython JPEG配信をOFFにします。** `--publish-jpeg-every 0` を基本にし、Python GUIやframe確認が必要なデバッグ時だけONにします。
+- **capture loopに余分なsleepを入れません。** `--capture-interval 0` を基本にし、FFmpeg pipeから届くframeをすぐ消費します。
+- **判定の意図的な遅延と入力遅延を分けます。** `--release-grace-seconds` やhold判定は安定化のための遅延です。入力frameが古い場合の遅延とは別に扱います。
+
+避ける構成です。
+
+```mermaid
+flowchart LR
+    MediaMTX["MediaMTX"]
+    Browser["Browser video<br/>live-ish"]
+    OpenCV["OpenCV VideoCapture<br/>RTSP buffer"]
+    Hub["Camera Hub"]
+    Overlay["Landmarks overlay<br/>late"]
+
+    MediaMTX -->|"WebRTC"| Browser
+    MediaMTX -->|"RTSP/H.264"| OpenCV --> Hub --> Overlay
+```
+
+この構成では、ブラウザ映像は遅れていないのに、Camera HubがOpenCV RTSP readerから古いframeを受け取り、
+landmarksだけが1秒前後遅れて見えることがあります。`Topic Age` はCamera Hubがframeを読んだ時刻から計算されるため、
+reader内部ですでに古いframeを掴んでいる場合は小さく見えることがあります。
+
+標準の起動は以下です。統合起動では `--hub-camera-backend ffmpeg-pipe` が既定です。
+
+```powershell
+scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-stop-existing
+```
+
+低遅延確認のためにPython GUIも同時に見る場合:
+
+```powershell
+scripts\start_camera_hub_stack.bat `
+  --camera-name "HD Pro Webcam C920" `
+  --force-stop-existing `
+  --publish-jpeg-every 0.05 `
+  --python-gui
+```
+
+この確認で、Python GUIの映像とlandmarksが一緒に遅れる場合は、Camera Hub入力frameが遅れています。
+ブラウザ映像だけが速く、landmarksだけが遅れる場合も、まずCamera HubのRTSP readerを疑います。
+`ffmpeg-pipe` でも遅れる場合は、FFmpeg publish側のエンコード設定、MediaMTX設定、またはCPU負荷を確認します。
+
+手動でCamera Hubだけを起動する場合の低遅延基本形です。
+
+```powershell
+uv run python apps/serve_camera_hub.py `
+  --host 127.0.0.1 `
+  --port 8765 `
+  --interval 0 `
+  --camera-source rtsp://127.0.0.1:8554/cam0 `
+  --camera-backend ffmpeg-pipe `
+  --camera-width 640 `
+  --camera-height 480 `
+  --camera-fps 30 `
+  --frame-id cam0 `
+  --publish-jpeg-every 0 `
+  --gesture-every 0.05 `
+  --gesture-model-complexity 0 `
+  --release-grace-seconds 0.03 `
+  --publish-landmarks
+```
+
+比較やfallbackのために旧OpenCV RTSP readerへ戻す場合だけ、以下を使います。
+
+```powershell
+scripts\start_camera_hub_stack.bat `
+  --camera-name "HD Pro Webcam C920" `
+  --force-stop-existing `
+  --hub-camera-backend ffmpeg
+```
+
+低遅延トラブルシュートの見方です。
+
+| 症状 | 可能性が高い箇所 | 確認/対策 |
+| --- | --- | --- |
+| `http://127.0.0.1:8889/cam0` は速いがlandmarksだけ遅い | Camera HubのRTSP reader | `--hub-camera-backend ffmpeg-pipe` を使う |
+| Python GUIでも映像とlandmarksが一緒に遅い | Camera Hub入力frame | OpenCV backendを避ける、CPU負荷を見る |
+| `Topic Age` が大きい | Camera Hub内の処理詰まり | `--gesture-every`、model_complexity、CPU使用率を見る |
+| `Stable` だけ解除が遅い | hold/release smoothing | `--release-grace-seconds` を小さくする |
+| ブラウザだけ重い | クライアント側描画負荷 | landmarks/overlay表示を減らす、接続数を確認する |
+
+Camera Hubは低遅延の切り分け用に、`/camera/status` へ診断値もpublishします。ブラウザGUIとPython GUIの両方で確認できます。
+
+- `capture.frame_age_ms`: Camera Hubが持っている最新frameが何ms前に読まれたものか
+- `capture.read_latency_ms`: 直近のframe readにかかった時間
+- `capture.read_failures`: 起動後のread失敗回数
+- `capture.read_fps`: Camera Hubが実際に読めているframe rate
+- `processors.sword_sign.inference_ms`: sword_sign processorの直近推論時間
+- `processors.sword_sign.publish_age_ms`: gesture topic publish時点での入力frame年齢
+
+複数カメラでも考え方は同じです。各camera pathごとにMediaMTXへpublishし、推論が必要なcameraだけCamera Hub workerを立てます。
+映像配信数はMediaMTX側で吸収し、Python側は必要なprocessorだけを実行します。
+
 ### MediaMTXの導入
 
 1. MediaMTXのWindows amd64リリースzipを入手します。
@@ -733,11 +854,11 @@ scripts\start_camera_hub_stack.bat `
 - `--no-browser`: ブラウザdebug viewerを自動で開きません。
 - `--python-gui`: Python GUIも同じsupervisor配下で起動します。
 - `--publish-jpeg-every 0.05`: Python GUIにも映像を出したいデバッグ時だけ指定します。
-- `--capture-interval 0`: RTSP内部バッファを追い越せるよう、Camera Hub側のcapture loopで追加sleepしません。
+- `--capture-interval 0`: Camera Hub側のcapture loopで追加sleepしません。`ffmpeg-pipe` ではFFmpeg stdoutをすぐ読み、OpenCV backendではreaderが遅れ続けるのを避けます。
 - `--hub-camera-backend ffmpeg-pipe`: 既定値です。Camera HubのRTSP readerでOpenCV内部バッファを避けます。
 - `--hub-camera-backend ffmpeg`: 従来のOpenCV FFmpeg backendへ戻す場合に指定します。
 - `--gop 30`: H.264のキーフレーム間隔です。30fpsでは約1秒ごとにキーフレームを入れます。
-- `--camera-read-timeout-ms 3000`: Camera HubがRTSP/H.264の次フレームを待つ時間です。
+- `--camera-read-timeout-ms 3000`: OpenCV backendでRTSP/H.264の次フレームを待つ時間です。`ffmpeg-pipe` ではFFmpeg subprocess側が読み取りを担当します。
 - `--skip-rtsp-wait`: FFmpeg publish後の `ffprobe` 疎通待ちを省略します。
 - `--hub-wait-seconds 20`: Camera Hub WebSocketの待受開始を待つ秒数です。
 - `--max-clients 8`: Camera Hub WebSocketの最大接続数です。映像配信数ではなくgesture/status購読数です。
