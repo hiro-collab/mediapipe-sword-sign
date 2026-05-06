@@ -1,6 +1,8 @@
 import importlib.util
+import io
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -152,7 +154,7 @@ class CameraHubStackTests(unittest.TestCase):
             "command": (
                 "powershell -NoProfile -Command "
                 "\"Get-CimInstance Win32_Process | Where-Object { "
-                "$_.CommandLine -match 'serve_camera_hub|camera_hub_stack|mediamtx|ffmpeg' }\""
+                "$_.CommandLine -match 'serve_camera_hub|camera_hub_stack|mediamtx' }\""
             ),
         }
 
@@ -169,7 +171,7 @@ class CameraHubStackTests(unittest.TestCase):
             stack.listen_port_owners = lambda ports: {11: {8765}, 99: {8554}}
             stack.list_matching_processes = lambda: [
                 {"pid": 12, "name": "uv.exe", "command": "camera_hub_stack.py"},
-                {"pid": 55, "name": "powershell.exe", "command": "Get-CimInstance Win32_Process serve_camera_hub|camera_hub_stack|mediamtx|ffmpeg"},
+                {"pid": 55, "name": "powershell.exe", "command": "Get-CimInstance Win32_Process serve_camera_hub|camera_hub_stack|mediamtx"},
                 {"pid": 99, "name": "mediamtx.exe", "command": "mediamtx config.yml"},
             ]
             stack.process_details = lambda pids: {}
@@ -185,6 +187,29 @@ class CameraHubStackTests(unittest.TestCase):
             stack.process_details = original_details
 
         self.assertEqual([process["pid"] for process in processes], [99])
+
+    def test_stack_process_pattern_does_not_match_generic_ffmpeg(self):
+        self.assertNotIn("ffmpeg", stack.STACK_PROCESS_PATTERN)
+
+    def test_log_helpers_redact_credentials(self):
+        value = stack.quote_for_log("rtsp://user:secret@example.test:8554/cam0")
+
+        self.assertNotIn("secret", value)
+        self.assertIn("rtsp://<redacted>@example.test:8554/cam0", value)
+
+    def test_parser_rejects_invalid_runtime_numbers(self):
+        invalid_args = [
+            ["--width", "0"],
+            ["--hub-port", "70000"],
+            ["--gesture-model-complexity", "2"],
+            ["--release-grace-seconds", "nan"],
+        ]
+
+        for args in invalid_args:
+            with self.subTest(args=args):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        stack.build_parser().parse_args(args)
 
 
 if __name__ == "__main__":

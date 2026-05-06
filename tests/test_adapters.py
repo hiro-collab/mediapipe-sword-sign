@@ -188,12 +188,62 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             WebSocketGestureBroadcaster(host="0.0.0.0")
 
+    def test_websocket_broadcaster_rejects_unsafe_configuration(self):
+        invalid_kwargs = [
+            {"port": 0},
+            {"max_clients": 0},
+            {"max_message_bytes": 0},
+            {"max_queue": 0},
+            {"allowed_origins": ["*"]},
+            {"allowed_origins": [" "]},
+            {"auth_token": "secret\n"},
+        ]
+
+        for kwargs in invalid_kwargs:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    WebSocketGestureBroadcaster(**kwargs)
+
+    def test_websocket_broadcaster_normalizes_tokens_and_origins(self):
+        broadcaster = WebSocketGestureBroadcaster(
+            auth_token=" secret ",
+            allowed_origins=" http://localhost:3000 ",
+        )
+
+        self.assertEqual(broadcaster.auth_token, "secret")
+        self.assertEqual(broadcaster.allowed_origins, ["http://localhost:3000"])
+
     def test_websocket_broadcaster_rejects_wrong_token(self):
         async def run():
             client = ClosingWebSocketClient()
             broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
 
             await broadcaster._handler(client, "/?token=wrong")
+
+            self.assertEqual(client.closed, [(1008, "unauthorized")])
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_accepts_trimmed_query_token(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
+
+            await broadcaster._handler(client, "/?token=%20secret%20")
+
+            self.assertEqual(client.closed, [])
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_rejects_query_parameter_flood(self):
+        async def run():
+            client = ClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster(auth_token="secret")
+            path = "/?" + "&".join(f"p{i}=1" for i in range(9)) + "&token=secret"
+
+            await broadcaster._handler(client, path)
 
             self.assertEqual(client.closed, [(1008, "unauthorized")])
             self.assertNotIn(client, broadcaster.clients)

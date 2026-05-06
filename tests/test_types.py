@@ -1,5 +1,6 @@
 import json
 import unittest
+from math import nan
 
 from mediapipe_sword_sign.types import GestureState
 
@@ -24,6 +25,16 @@ class GestureStateTests(unittest.TestCase):
 
         self.assertEqual(payload["metadata"]["frame_id"], 7)
         self.assertEqual(payload["metadata"]["fps"], 30.0)
+
+    def test_to_json_rejects_non_finite_metadata(self):
+        state = GestureState.no_hand(
+            source="test",
+            timestamp=123.0,
+            metadata={"bad": nan},
+        )
+
+        with self.assertRaises(ValueError):
+            state.to_json()
 
 
 if __name__ == "__main__":

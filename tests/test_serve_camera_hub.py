@@ -17,6 +17,9 @@ from apps.serve_camera_hub import (
     parse_image_transport,
     parse_interval,
     parse_jpeg_quality,
+    parse_max_clients,
+    parse_max_message_bytes,
+    parse_max_queue,
     parse_model_complexity,
     parse_port,
     parse_threshold,
@@ -24,6 +27,7 @@ from apps.serve_camera_hub import (
     parse_timeout_ms,
     redact_camera_source,
     resolve_auth_token,
+    safe_runtime_error,
 )
 
 
@@ -35,6 +39,15 @@ class ServeCameraHubTests(unittest.TestCase):
             parse_port("0")
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_threshold("nan")
+
+    def test_parse_websocket_limits(self):
+        self.assertEqual(parse_max_clients("8"), 8)
+        self.assertEqual(parse_max_message_bytes("4096"), 4096)
+        self.assertEqual(parse_max_queue("4"), 4)
+        for parser in (parse_max_clients, parse_max_message_bytes, parse_max_queue):
+            with self.subTest(parser=parser.__name__):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    parser("0")
 
     def test_parse_optional_intervals_and_jpeg_quality(self):
         self.assertEqual(parse_interval("0"), 0.0)
@@ -145,6 +158,8 @@ class ServeCameraHubTests(unittest.TestCase):
         self.assertIn("reorder_queue_size;0", args.opencv_ffmpeg_capture_options)
         self.assertEqual(args.camera_read_timeout_ms, 3000)
         self.assertEqual(args.ffmpeg_path, "ffmpeg")
+        self.assertEqual(args.max_message_bytes, 4096)
+        self.assertEqual(args.max_queue, 4)
 
     def test_ffmpeg_pipe_capture_requires_dimensions(self):
         with self.assertRaises(ValueError):
@@ -245,6 +260,16 @@ class ServeCameraHubTests(unittest.TestCase):
             "rtsp://127.0.0.1:8554/cam0",
         )
         self.assertEqual(redact_camera_source("0"), "0")
+
+    def test_safe_runtime_error_does_not_report_paths_or_model_details(self):
+        self.assertEqual(
+            safe_runtime_error(FileNotFoundError("executable not found: C:\\Secret\\ffmpeg.exe")),
+            "executable_not_found",
+        )
+        self.assertEqual(
+            safe_runtime_error(FileNotFoundError("C:\\Secret\\model.joblib")),
+            "model_not_found",
+        )
 
     def test_due_respects_disabled_and_elapsed_interval(self):
         self.assertFalse(due(None, 0.0, 10.0))

@@ -1,4 +1,5 @@
 import unittest
+from math import inf, nan
 
 from mediapipe_sword_sign import FEATURE_DIMENSION, SwordSignDetector
 
@@ -48,6 +49,24 @@ class SwordSignDetectorTests(unittest.TestCase):
 
         self.assertIsNone(state.primary)
         self.assertFalse(state.gesture("none").active)
+
+    def test_threshold_must_be_finite_probability(self):
+        for value in (-0.1, 1.1, nan, inf):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    SwordSignDetector(model=FakeModel([1.0]), threshold=value)
+
+    def test_threshold_setter_rejects_invalid_values(self):
+        detector = SwordSignDetector(model=FakeModel([1.0]), threshold=0.5)
+
+        with self.assertRaises(ValueError):
+            detector.threshold = inf
+
+    def test_model_complexity_must_match_mediapipe_values(self):
+        for value in (-1, 2, "nan"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    SwordSignDetector(model=FakeModel([1.0]), model_complexity=value)
 
 
 if __name__ == "__main__":

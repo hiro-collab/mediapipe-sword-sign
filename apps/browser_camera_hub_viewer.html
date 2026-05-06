@@ -404,6 +404,25 @@
       $(id).textContent = value == null || value === "" ? "-" : String(value);
     }
 
+    function allowedUrl(rawValue, protocols, label) {
+      const raw = String(rawValue || "").trim();
+      if (!raw) {
+        setText("error", `${label} is empty`);
+        return null;
+      }
+      try {
+        const url = new URL(raw, window.location.href);
+        if (!protocols.includes(url.protocol)) {
+          setText("error", `${label} protocol is not allowed`);
+          return null;
+        }
+        return url.href;
+      } catch (error) {
+        setText("error", `${label} is invalid`);
+        return null;
+      }
+    }
+
     function formatAge(age) {
       return age == null ? "-" : `${age.toFixed(3)}s`;
     }
@@ -689,9 +708,23 @@
         state.ws = null;
         state.manualClose = false;
       }
-      $("mediaFrame").src = $("mediaUrl").value.trim();
+      const mediaUrl = allowedUrl($("mediaUrl").value, ["http:", "https:", "file:"], "MediaMTX URL");
+      const wsUrl = allowedUrl($("wsUrl").value, ["ws:", "wss:"], "Camera Hub WebSocket");
+      if (!mediaUrl || !wsUrl) {
+        log("connection blocked by URL validation");
+        return;
+      }
+      $("mediaFrame").src = mediaUrl;
       setText("connection", "Connecting");
-      const ws = new WebSocket($("wsUrl").value.trim());
+      let ws;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (error) {
+        setText("connection", "Disconnected");
+        setText("error", "websocket url rejected");
+        log("websocket url rejected");
+        return;
+      }
       state.ws = ws;
       ws.onopen = () => {
         setText("connection", "Connected");
@@ -788,6 +821,9 @@
     }
 
     function handleWindowMessage(event) {
+      if (event.source !== $("mediaFrame").contentWindow) {
+        return;
+      }
       const message = event.data;
       if (!message || typeof message !== "object") {
         return;
@@ -803,10 +839,10 @@
       const wsUrl = params.get("wsUrl");
       const target = params.get("target");
       const mirror = params.get("mirror");
-      if (mediaUrl) {
+      if (mediaUrl && allowedUrl(mediaUrl, ["http:", "https:", "file:"], "MediaMTX URL")) {
         $("mediaUrl").value = mediaUrl;
       }
-      if (wsUrl) {
+      if (wsUrl && allowedUrl(wsUrl, ["ws:", "wss:"], "Camera Hub WebSocket")) {
         $("wsUrl").value = wsUrl;
       }
       if (target) {

@@ -26,7 +26,10 @@ hlsAddress: :8888
 
 webrtc: true
 webrtcAddress: :8889
-webrtcAllowOrigins: ['*']
+# Keep this local by default. Add your LAN origin explicitly only when needed.
+webrtcAllowOrigins:
+  - http://127.0.0.1:8889
+  - http://localhost:8889
 
 paths:
   cam0:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Iterable, Protocol
 
 
@@ -25,17 +26,20 @@ def relative_landmark_features(landmarks: Iterable[LandmarkLike]) -> list[float]
         raise ValueError(f"expected {LANDMARK_COUNT} landmarks, got {len(points)}")
 
     base = points[0]
-    base_x = float(base.x)
-    base_y = float(base.y)
-    base_z = float(base.z)
+    base_x = _finite_float(base.x)
+    base_y = _finite_float(base.y)
+    base_z = _finite_float(base.z)
 
     features: list[float] = []
     for point in points:
+        point_x = _finite_float(point.x)
+        point_y = _finite_float(point.y)
+        point_z = _finite_float(point.z)
         features.extend(
             [
-                float(point.x) - base_x,
-                float(point.y) - base_y,
-                float(point.z) - base_z,
+                point_x - base_x,
+                point_y - base_y,
+                point_z - base_z,
             ]
         )
     return features
@@ -46,7 +50,17 @@ def features_from_hand_landmarks(hand_landmarks: HandLandmarksLike) -> list[floa
 
 
 def validate_feature_vector(features: Iterable[float]) -> list[float]:
-    vector = [float(value) for value in features]
+    vector = [_finite_float(value) for value in features]
     if len(vector) != FEATURE_DIMENSION:
         raise ValueError(f"expected {FEATURE_DIMENSION} features, got {len(vector)}")
     return vector
+
+
+def _finite_float(value: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("feature values must be numeric") from exc
+    if not math.isfinite(parsed):
+        raise ValueError("feature values must be finite numbers")
+    return parsed

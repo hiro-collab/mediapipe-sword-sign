@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Mapping
 
@@ -45,10 +46,11 @@ class SwordSignDetector:
             expected_sha256=expected_model_sha256,
             allow_untrusted=allow_untrusted_model,
         )
-        self.threshold = float(threshold)
+        self._threshold = DEFAULT_THRESHOLD
+        self.threshold = threshold
         self.labels = dict(labels or DEFAULT_LABELS)
         self.source = source
-        self.model_complexity = model_complexity
+        self.model_complexity = validate_model_complexity(model_complexity)
         self._mp_hands = None
         self._hands = None
 
@@ -63,6 +65,14 @@ class SwordSignDetector:
         if self._hands is not None:
             self._hands.close()
             self._hands = None
+
+    @property
+    def threshold(self) -> float:
+        return self._threshold
+
+    @threshold.setter
+    def threshold(self, value: float) -> None:
+        self._threshold = validate_probability(value, name="threshold")
 
     def detect(self, frame_bgr, *, flip: bool = False, timestamp: float | None = None) -> GestureState:
         return self.detect_frame(frame_bgr, flip=flip, timestamp=timestamp).state
@@ -155,3 +165,23 @@ class SwordSignDetector:
         import mediapipe as mp
 
         return mp
+
+
+def validate_probability(value: float, *, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not isfinite(parsed) or not 0.0 <= parsed <= 1.0:
+        raise ValueError(f"{name} must be a finite number between 0 and 1")
+    return parsed
+
+
+def validate_model_complexity(value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("model_complexity must be 0 or 1") from exc
+    if parsed not in {0, 1}:
+        raise ValueError("model_complexity must be 0 or 1")
+    return parsed

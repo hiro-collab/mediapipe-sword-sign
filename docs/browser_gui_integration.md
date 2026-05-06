@@ -50,6 +50,9 @@ local HTTP media page plus a Camera Hub-compatible WebSocket, and prints an
 `Latency Probe` panel reports `Last Delta`, `Average`, `P95`, and `Min / Max`.
 Use `--landmark-delay-ms 1000` as a sanity check; the reported delta should grow
 by roughly one second.
+The probe binds to localhost by default. If you bind it to a non-local host, add
+`--allow-remote-probe` explicitly because the probe endpoints are intentionally
+unauthenticated test fixtures.
 
 ## Recommended Hub Startup
 
@@ -248,6 +251,8 @@ an MJPEG/H.264 streaming service and keeping this hub for gesture/status topics.
 When the hub binds to localhost, authentication is optional. When binding to a
 non-local host, the server refuses unauthenticated startup unless
 `--allow-remote-unauthenticated` is explicitly set.
+Wildcard WebSocket origins are rejected; list the exact browser origins that
+should connect.
 
 For remote browser clients, use a token:
 

@@ -1,3 +1,4 @@
+import argparse
 import socket
 import tempfile
 import unittest
@@ -11,7 +12,10 @@ from apps.measure_browser_overlay_latency import (
     build_viewer_url,
     gesture_probe_payload,
     image_paths,
+    is_local_host,
+    parse_non_negative_float,
     select_port,
+    validate_probe_exposure,
 )
 from mediapipe_sword_sign.types import GesturePrediction, GestureState
 
@@ -24,6 +28,21 @@ class MeasureBrowserOverlayLatencyTests(unittest.TestCase):
         self.assertEqual(args.ws_port, 8772)
         self.assertTrue(args.auto_port)
         self.assertEqual(args.period_ms, 1200)
+        self.assertFalse(args.allow_remote_probe)
+
+    def test_parse_non_negative_float_rejects_non_finite_values(self):
+        self.assertEqual(parse_non_negative_float("0"), 0.0)
+        for value in ("nan", "inf", "-1"):
+            with self.subTest(value=value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    parse_non_negative_float(value)
+
+    def test_validate_probe_exposure_requires_explicit_remote_opt_in(self):
+        self.assertTrue(is_local_host("127.0.0.1"))
+        validate_probe_exposure("127.0.0.1", allow_remote_probe=False)
+        validate_probe_exposure("0.0.0.0", allow_remote_probe=True)
+        with self.assertRaises(ValueError):
+            validate_probe_exposure("0.0.0.0", allow_remote_probe=False)
 
     def test_image_paths_requires_hand_in_and_out(self):
         with tempfile.TemporaryDirectory() as directory:

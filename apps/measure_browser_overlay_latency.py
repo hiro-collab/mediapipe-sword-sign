@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import queue
 import socket
 import sys
@@ -40,6 +41,7 @@ DEFAULT_HTTP_PORT = 8771
 DEFAULT_WS_PORT = 8772
 DEFAULT_PERIOD_MS = 1200
 DEFAULT_MAX_CLIENTS = 8
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True)
@@ -80,9 +82,23 @@ def parse_non_negative_float(value: str) -> float:
         parsed = float(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("value must be a number") from exc
-    if parsed < 0:
+    if not math.isfinite(parsed) or parsed < 0:
         raise argparse.ArgumentTypeError("value must be 0 or greater")
     return parsed
+
+
+def is_local_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in LOCAL_HOSTS or normalized.startswith("127.")
+
+
+def validate_probe_exposure(host: str, *, allow_remote_probe: bool) -> None:
+    if is_local_host(host) or allow_remote_probe:
+        return
+    raise ValueError(
+        "refusing to expose latency probe on a non-local host without "
+        "--allow-remote-probe"
+    )
 
 
 def image_paths(image_dir: Path) -> dict[str, Path]:
@@ -450,6 +466,7 @@ async def publish_status(
 
 
 async def run_probe(args: argparse.Namespace) -> None:
+    validate_probe_exposure(args.host, allow_remote_probe=args.allow_remote_probe)
     images = image_paths(args.image_dir)
     http_port, http_warning = select_port(args.host, args.http_port, auto_port=args.auto_port)
     ws_port, ws_warning = select_port(args.host, args.ws_port, auto_port=args.auto_port)
@@ -491,7 +508,7 @@ async def run_probe(args: argparse.Namespace) -> None:
         args.host,
         ws_port,
         max_clients=args.max_clients,
-        allow_remote_unauthenticated=True,
+        allow_remote_unauthenticated=args.allow_remote_probe,
     )
     try:
         async with broadcaster:
@@ -554,6 +571,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-id", default="latency_probe")
     parser.add_argument("--target-gesture", default="sword_sign")
     parser.add_argument("--max-clients", type=parse_positive_int, default=DEFAULT_MAX_CLIENTS)
+    parser.add_argument(
+        "--allow-remote-probe",
+        action="store_true",
+        help=(
+            "Allow the unauthenticated latency probe HTTP/WebSocket endpoints to bind "
+            "to a non-local host."
+        ),
+    )
     return parser
 
 

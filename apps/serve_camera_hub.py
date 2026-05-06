@@ -198,6 +198,18 @@ def parse_image_transport(value: str) -> str:
     return parsed
 
 
+def parse_max_clients(value: str) -> int:
+    return parse_positive_int(value, name="--max-clients")
+
+
+def parse_max_message_bytes(value: str) -> int:
+    return parse_positive_int(value, name="--max-message-bytes")
+
+
+def parse_max_queue(value: str) -> int:
+    return parse_positive_int(value, name="--max-queue")
+
+
 def resolve_auth_token(auth_token_env: str | None) -> str | None:
     if not auth_token_env:
         return None
@@ -212,6 +224,8 @@ def resolve_auth_token(auth_token_env: str | None) -> str | None:
 
 def safe_runtime_error(exc: Exception) -> str:
     if isinstance(exc, FileNotFoundError):
+        if "executable not found" in str(exc):
+            return "executable_not_found"
         return "model_not_found"
     if isinstance(exc, UnsafeModelError):
         return "unsafe_model"
@@ -814,9 +828,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allowed-origin", action="append", dest="allowed_origins")
     parser.add_argument(
         "--max-clients",
-        type=lambda value: parse_positive_int(value, name="--max-clients"),
+        type=parse_max_clients,
         default=8,
     )
+    parser.add_argument("--max-message-bytes", type=parse_max_message_bytes, default=4096)
+    parser.add_argument("--max-queue", type=parse_max_queue, default=4)
     parser.add_argument("--allow-remote-unauthenticated", action="store_true")
     return parser
 
@@ -980,6 +996,8 @@ async def run(args: argparse.Namespace) -> None:
         auth_token=auth_token,
         allowed_origins=args.allowed_origins,
         max_clients=args.max_clients,
+        max_message_bytes=args.max_message_bytes,
+        max_queue=args.max_queue,
         allow_remote_unauthenticated=args.allow_remote_unauthenticated,
     )
     camera_source: int | str = (

@@ -4,7 +4,7 @@ import asyncio
 import hmac
 from contextlib import suppress
 from types import TracebackType
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import parse_qs, urlsplit
 
 from mediapipe_sword_sign.payloads import gesture_state_json
@@ -13,6 +13,9 @@ from mediapipe_sword_sign.types import GestureState
 
 
 LOCAL_BIND_HOSTS = {"127.0.0.1", "localhost", "::1"}
+DEFAULT_MAX_CLIENTS = 8
+DEFAULT_MAX_MESSAGE_BYTES = 4096
+DEFAULT_MAX_QUEUE = 4
 
 
 class WebSocketGestureBroadcaster:
@@ -22,10 +25,13 @@ class WebSocketGestureBroadcaster:
         port: int = 8765,
         *,
         auth_token: str | None = None,
-        allowed_origins: list[str] | None = None,
-        max_clients: int | None = 8,
+        allowed_origins: Iterable[str] | None = None,
+        max_clients: int | None = DEFAULT_MAX_CLIENTS,
+        max_message_bytes: int | None = DEFAULT_MAX_MESSAGE_BYTES,
+        max_queue: int | None = DEFAULT_MAX_QUEUE,
         allow_remote_unauthenticated: bool = False,
     ) -> None:
+        auth_token = _normalize_token(auth_token, name="auth_token")
         if (
             not _is_local_bind_host(host)
             and not auth_token
@@ -35,10 +41,15 @@ class WebSocketGestureBroadcaster:
                 "refusing to bind WebSocket broadcaster to a non-local host without auth_token"
             )
         self.host = host
-        self.port = int(port)
+        self.port = _validate_port(port)
         self.auth_token = auth_token
-        self.allowed_origins = allowed_origins
-        self.max_clients = max_clients
+        self.allowed_origins = _normalize_allowed_origins(allowed_origins)
+        self.max_clients = _validate_optional_positive_int(max_clients, name="max_clients")
+        self.max_message_bytes = _validate_optional_positive_int(
+            max_message_bytes,
+            name="max_message_bytes",
+        )
+        self.max_queue = _validate_optional_positive_int(max_queue, name="max_queue")
         self.clients: set[Any] = set()
         self._server: Any | None = None
         self._publish_lock = asyncio.Lock()
@@ -54,6 +65,10 @@ class WebSocketGestureBroadcaster:
         options: dict[str, object] = {}
         if self.allowed_origins is not None:
             options["origins"] = self.allowed_origins
+        if self.max_message_bytes is not None:
+            options["max_size"] = self.max_message_bytes
+        if self.max_queue is not None:
+            options["max_queue"] = self.max_queue
         self._server = await serve(self._handler, self.host, self.port, **options)
 
     async def stop(self) -> None:
@@ -158,20 +173,75 @@ def _is_local_bind_host(host: str) -> bool:
     return normalized in LOCAL_BIND_HOSTS or normalized.startswith("127.")
 
 
+def _validate_port(port: int) -> int:
+    parsed = int(port)
+    if not 1 <= parsed <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    return parsed
+
+
+def _validate_optional_positive_int(value: int | None, *, name: str) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be greater than 0")
+    return parsed
+
+
+def _normalize_allowed_origins(origins: Iterable[str] | None) -> list[str] | None:
+    if origins is None:
+        return None
+    if isinstance(origins, str):
+        origins = [origins]
+
+    normalized: list[str] = []
+    for origin in origins:
+        origin_text = str(origin).strip()
+        if not origin_text:
+            raise ValueError("allowed origin must not be empty")
+        if origin_text == "*":
+            raise ValueError("wildcard WebSocket origins are not allowed")
+        normalized.append(origin_text)
+    return normalized
+
+
+def _normalize_token(token: str | None, *, name: str) -> str | None:
+    if token is None:
+        return None
+    raw_token = str(token)
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw_token):
+        raise ValueError(f"{name} must not contain control characters")
+    token_text = raw_token.strip()
+    if not token_text:
+        return None
+    return token_text
+
+
 def _extract_auth_token(websocket: Any, path: str | None) -> str | None:
     headers = _request_headers(websocket)
     authorization = _header(headers, "Authorization")
     if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
+        return _request_token(authorization[7:])
 
     header_token = _header(headers, "X-Gesture-Token")
     if header_token:
-        return header_token.strip()
+        return _request_token(header_token)
 
     request_path = path or _request_path(websocket)
-    query = parse_qs(urlsplit(request_path).query)
+    try:
+        query = parse_qs(urlsplit(request_path).query, max_num_fields=8)
+    except ValueError:
+        return None
     tokens = query.get("token")
-    return tokens[0] if tokens else None
+    return _request_token(tokens[0]) if tokens else None
+
+
+def _request_token(token: str) -> str | None:
+    try:
+        return _normalize_token(token, name="token")
+    except ValueError:
+        return None
 
 
 def _request_headers(websocket: Any) -> Any:

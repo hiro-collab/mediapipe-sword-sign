@@ -82,7 +82,12 @@ class GestureState:
         return payload
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(
+            self.to_dict(),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     @classmethod
     def no_hand(

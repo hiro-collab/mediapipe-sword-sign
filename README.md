@@ -636,6 +636,7 @@ uv run python apps/measure_browser_overlay_latency.py --landmark-delay-ms 1000
 既定ではHTTP `8771`、WebSocket `8772` を使います。どちらかが使用中の場合は空きportへ自動で切り替え、
 terminalに `warning: 127.0.0.1:8771 is in use; using ... instead` のように表示します。
 固定portで失敗させたい場合は `--no-auto-port` を指定します。
+計測probeは既定でlocalhost専用です。`--host 0.0.0.0` などでLANへ出す場合は、未認証の検証用HTTP/WebSocketを公開することを理解した上で `--allow-remote-probe` を明示してください。
 
 HLSで確認したい場合は以下を開きます。WebRTCより遅延は増えますが、確認が簡単な場合があります。
 
@@ -683,7 +684,7 @@ uv run python apps/serve_camera_hub.py `
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 ```
 
-前回のMediaMTX / FFmpeg / Camera Hubが残っている可能性がある場合は、起動前チェックで検出します。
+前回のMediaMTX / Camera Hub、またはstack用portの利用が残っている可能性がある場合は、起動前チェックで検出します。
 検出時は通常は起動を止めます。自動で残存プロセスを止めてから起動する場合:
 
 ```powershell
@@ -740,7 +741,7 @@ scripts\start_camera_hub_stack.bat `
 - `--skip-rtsp-wait`: FFmpeg publish後の `ffprobe` 疎通待ちを省略します。
 - `--hub-wait-seconds 20`: Camera Hub WebSocketの待受開始を待つ秒数です。
 - `--max-clients 8`: Camera Hub WebSocketの最大接続数です。映像配信数ではなくgesture/status購読数です。
-- `--force-stop-existing`: 前回残ったMediaMTX / FFmpeg / Camera Hubや使用中portを止めてから起動します。
+- `--force-stop-existing`: 前回残ったMediaMTX / Camera Hubや使用中portを止めてから起動します。無関係なFFmpegプロセスを名前だけで止めないよう、genericな `ffmpeg` 検索はしません。
 - `--mediamtx-path` / `--ffmpeg-path` / `--ffprobe-path`: PATHが通っていない場合にexeを明示します。
 
 `--max-clients` はCamera HubのJSON topic購読上限です。

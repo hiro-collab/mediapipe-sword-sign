@@ -2,6 +2,15 @@
 
 ## Unreleased - Camera hub topic envelope split
 
+### Security and stability review
+
+- WebSocket公開時の入力境界を再強化。Originのワイルドカード拒否、認証token正規化、最大message/queue制限、query token flood対策を追加。
+- Camera Hub / browser viewer / latency probeの新規攻撃面を確認し、URL protocol検証、`postMessage`送信元確認、非localhost probe公開の明示opt-inを追加。
+- MediaMTXサンプル設定のWebRTC originをlocalhost既定にし、`*` での公開を避ける形へ変更。
+- RTSP URLなどのcredentialをstackログからredactし、`--force-stop-existing` が無関係なFFmpegを名前だけで止めないように変更。
+- 非finite値 (`NaN` / `Infinity`) が特徴量、しきい値、JSON payloadへ混入しないよう検証を追加。
+- Pythonを `<3.13` に制限し、MediaPipe/OpenCVを確認済みの固定版へ戻して実行環境の再現性を改善。
+
 - `mediapipe_sword_sign/topics.py`
   - ROS2へ寄せやすいtopic envelope JSON helperを追加。
 - `mediapipe_sword_sign/payloads.py`

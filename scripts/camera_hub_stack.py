@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -20,6 +22,10 @@ DEFAULT_OPENCV_FFMPEG_OPTIONS = (
     "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|reorder_queue_size;0"
 )
 STACK_PORTS = (8554, 8888, 8889, 8765)
+STACK_PROCESS_PATTERN = "serve_camera_hub|camera_hub_stack|mediamtx"
+URL_CREDENTIAL_RE = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/\s\"'@]+@)"
+)
 
 
 @dataclass
@@ -181,7 +187,11 @@ class StackSupervisor:
         log_file = self.log_dir / f"{name}.log"
         log_handle = log_file.open("a", encoding="utf-8", errors="replace")
         log_handle.write(f"\n\n--- start {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        log_handle.write("command: " + " ".join(quote_for_log(part) for part in command) + "\n")
+        log_handle.write(
+            "command: "
+            + " ".join(quote_for_log(part) for part in command)
+            + "\n"
+        )
         log_handle.flush()
 
         creationflags = 0
@@ -251,18 +261,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-name", default="HD Pro Webcam C920")
     parser.add_argument("--frame-id", default="cam0")
     parser.add_argument("--rtsp-url", default="rtsp://127.0.0.1:8554/cam0")
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--width", type=parse_positive_int, default=640)
+    parser.add_argument("--height", type=parse_positive_int, default=480)
+    parser.add_argument("--fps", type=parse_positive_int, default=30)
     parser.add_argument("--bitrate", default="800k")
-    parser.add_argument("--gop", type=int, default=30)
+    parser.add_argument("--gop", type=parse_positive_int, default=30)
     parser.add_argument("--hub-host", default="127.0.0.1")
-    parser.add_argument("--hub-port", type=int, default=8765)
-    parser.add_argument("--publish-jpeg-every", type=float, default=0.0)
-    parser.add_argument("--capture-interval", type=float, default=0.0)
-    parser.add_argument("--gesture-every", type=float, default=0.05)
-    parser.add_argument("--gesture-model-complexity", type=int, default=0)
-    parser.add_argument("--release-grace-seconds", type=float, default=0.03)
+    parser.add_argument("--hub-port", type=parse_port, default=8765)
+    parser.add_argument("--publish-jpeg-every", type=parse_non_negative_float, default=0.0)
+    parser.add_argument("--capture-interval", type=parse_non_negative_float, default=0.0)
+    parser.add_argument("--gesture-every", type=parse_non_negative_float, default=0.05)
+    parser.add_argument("--gesture-model-complexity", type=parse_model_complexity, default=0)
+    parser.add_argument("--release-grace-seconds", type=parse_non_negative_float, default=0.03)
     parser.add_argument(
         "--hub-camera-backend",
         choices=["ffmpeg", "ffmpeg-pipe"],
@@ -280,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-read-timeout-ms", type=int, default=3000)
     parser.add_argument(
         "--max-clients",
-        type=int,
+        type=parse_positive_int,
         default=8,
         help="Maximum Camera Hub WebSocket clients for gesture/status topics.",
     )
@@ -292,9 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ffmpeg-path", default="")
     parser.add_argument("--ffprobe-path", default="")
     parser.add_argument("--uv-path", default="")
-    parser.add_argument("--wait-seconds", type=int, default=20)
-    parser.add_argument("--hub-wait-seconds", type=int, default=20)
-    parser.add_argument("--graceful-timeout", type=float, default=8.0)
+    parser.add_argument("--wait-seconds", type=parse_positive_int, default=20)
+    parser.add_argument("--hub-wait-seconds", type=parse_positive_int, default=20)
+    parser.add_argument("--graceful-timeout", type=parse_positive_float, default=8.0)
     parser.add_argument("--skip-rtsp-wait", action="store_true")
     parser.add_argument("--force-stop-existing", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
@@ -304,6 +314,50 @@ def build_parser() -> argparse.ArgumentParser:
         default=r".runtime\camera-hub-stack\logs",
     )
     return parser
+
+
+def parse_positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
+def parse_port(value: str) -> int:
+    parsed = parse_positive_int(value)
+    if parsed > 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return parsed
+
+
+def parse_non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a number") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("value must be 0 or greater")
+    return parsed
+
+
+def parse_positive_float(value: str) -> float:
+    parsed = parse_non_negative_float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
+def parse_model_complexity(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("model complexity must be 0 or 1") from exc
+    if parsed not in {0, 1}:
+        raise argparse.ArgumentTypeError("model complexity must be 0 or 1")
+    return parsed
 
 
 def build_ffmpeg_args(
@@ -452,7 +506,7 @@ def check_existing_stack(
 
     print("Existing Camera Hub stack related processes were found:")
     for process in existing:
-        command = process.get("command") or ""
+        command = redact_text_for_log(process.get("command") or "")
         if len(command) > 140:
             command = command[:137] + "..."
         port_text = ""
@@ -535,7 +589,7 @@ def is_process_discovery_helper(process: dict[str, object]) -> bool:
     command = str(process.get("command") or "")
     return (
         "Get-CimInstance Win32_Process" in command
-        and "serve_camera_hub|camera_hub_stack|mediamtx|ffmpeg" in command
+        and STACK_PROCESS_PATTERN in command
     )
 
 
@@ -646,7 +700,7 @@ def list_matching_processes_windows() -> list[dict[str, object]]:
         (
             "Get-CimInstance Win32_Process | "
             "Where-Object { $_.CommandLine -match "
-            "'serve_camera_hub|camera_hub_stack|mediamtx|ffmpeg' } | "
+            f"'{STACK_PROCESS_PATTERN}' }} | "
             "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
         ),
     ]
@@ -728,7 +782,7 @@ def process_details_windows(pids: list[int]) -> dict[int, dict[str, str]]:
 
 
 def wait_for_rtsp(ffprobe: str, rtsp_url: str, wait_seconds: int) -> None:
-    print(f"waiting for RTSP stream: {rtsp_url}")
+    print(f"waiting for RTSP stream: {redact_text_for_log(rtsp_url)}")
     deadline = time.monotonic() + wait_seconds
     last_error = ""
     command = build_ffprobe_args(ffprobe, rtsp_url)
@@ -738,7 +792,7 @@ def wait_for_rtsp(ffprobe: str, rtsp_url: str, wait_seconds: int) -> None:
         if ready:
             print("RTSP stream is ready.")
             return
-        last_error = detail
+        last_error = redact_text_for_log(detail)
         time.sleep(1.0)
     raise RuntimeError(f"RTSP stream did not become ready. Last error: {last_error}")
 
@@ -814,6 +868,7 @@ def probe_rtsp_once(command: list[str], *, timeout_seconds: float) -> tuple[bool
         if "codec_type=video" in output:
             return True, output.strip()
         detail = output.strip() or f"ffprobe exited with code {result.returncode}"
+        detail = redact_text_for_log(detail)
         return False, detail
     except subprocess.TimeoutExpired as exc:
         output = "\n".join(
@@ -827,6 +882,7 @@ def probe_rtsp_once(command: list[str], *, timeout_seconds: float) -> tuple[bool
         if "codec_type=video" in output:
             return True, output.strip()
         detail = output.strip() or f"ffprobe timed out after {timeout_seconds:.1f}s"
+        detail = redact_text_for_log(detail)
         return False, detail
 
 
@@ -925,9 +981,14 @@ def open_browser_viewer(path: Path) -> None:
 
 
 def quote_for_log(value: str) -> str:
+    value = redact_text_for_log(value)
     if any(char.isspace() for char in value):
         return '"' + value.replace('"', '\\"') + '"'
     return value
+
+
+def redact_text_for_log(value: object) -> str:
+    return URL_CREDENTIAL_RE.sub(r"\g<scheme><redacted>@", str(value))
 
 
 def main(argv: list[str] | None = None) -> int:

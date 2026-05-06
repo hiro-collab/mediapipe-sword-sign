@@ -269,7 +269,8 @@ scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 ```
 
 If an earlier run may still be alive, let the startup check stop matching
-MediaMTX, FFmpeg, Camera Hub, or occupied stack ports first:
+MediaMTX, Camera Hub, or occupied stack ports first. The supervisor does not
+match arbitrary FFmpeg processes by name:
 
 ```powershell
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-stop-existing
