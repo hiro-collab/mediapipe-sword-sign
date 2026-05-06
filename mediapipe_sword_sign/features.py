@@ -49,6 +49,15 @@ def features_from_hand_landmarks(hand_landmarks: HandLandmarksLike) -> list[floa
     return relative_landmark_features(hand_landmarks.landmark)
 
 
+def mirror_feature_vector(features: Iterable[float]) -> list[float]:
+    """Mirror wrist-relative hand features across the hand's vertical axis."""
+    vector = validate_feature_vector(features)
+    mirrored = list(vector)
+    for index in range(0, FEATURE_DIMENSION, COORDS_PER_LANDMARK):
+        mirrored[index] = -mirrored[index]
+    return mirrored
+
+
 def validate_feature_vector(features: Iterable[float]) -> list[float]:
     vector = [_finite_float(value) for value in features]
     if len(vector) != FEATURE_DIMENSION:

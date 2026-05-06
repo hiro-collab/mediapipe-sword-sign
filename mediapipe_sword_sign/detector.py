@@ -6,7 +6,11 @@ from math import isfinite
 from pathlib import Path
 from typing import Mapping
 
-from .features import features_from_hand_landmarks, validate_feature_vector
+from .features import (
+    features_from_hand_landmarks,
+    mirror_feature_vector,
+    validate_feature_vector,
+)
 from .model_loader import load_gesture_model
 from .types import DEFAULT_LABELS, GESTURE_NONE, GesturePrediction, GestureState
 
@@ -40,6 +44,7 @@ class SwordSignDetector:
         labels: Mapping[int, str] | None = None,
         source: str = DEFAULT_SOURCE,
         model_complexity: int = 1,
+        use_mirrored_features: bool = True,
     ) -> None:
         self.model = model if model is not None else load_gesture_model(
             model_path,
@@ -51,6 +56,7 @@ class SwordSignDetector:
         self.labels = dict(labels or DEFAULT_LABELS)
         self.source = source
         self.model_complexity = validate_model_complexity(model_complexity)
+        self.use_mirrored_features = bool(use_mirrored_features)
         self._mp_hands = None
         self._hands = None
 
@@ -114,14 +120,52 @@ class SwordSignDetector:
 
     def predict_features(self, features, *, timestamp: float | None = None) -> GestureState:
         vector = validate_feature_vector(features)
-        probabilities = list(self.model.predict_proba([vector])[0])
-        classes = list(getattr(self.model, "classes_", range(len(probabilities))))
-        scores = {
-            int(label): float(probability)
-            for label, probability in zip(classes, probabilities)
-        }
+        feature_variants = [("original", vector)]
+        if self.use_mirrored_features:
+            mirrored = mirror_feature_vector(vector)
+            if mirrored != vector:
+                feature_variants.append(("mirrored", mirrored))
 
-        prediction_label = max(scores, key=scores.get)
+        probability_rows = list(
+            self.model.predict_proba([variant for _, variant in feature_variants])
+        )
+        if len(probability_rows) != len(feature_variants):
+            raise ValueError("model returned a probability row count that does not match inputs")
+        first_probability_row = list(probability_rows[0])
+        classes = list(getattr(self.model, "classes_", range(len(first_probability_row))))
+        candidates = []
+        for probabilities in probability_rows:
+            scores = {
+                int(label): float(probability)
+                for label, probability in zip(classes, probabilities)
+            }
+            prediction_label = max(scores, key=scores.get)
+            prediction_name = self.labels.get(prediction_label, f"label_{prediction_label}")
+            candidates.append(
+                {
+                    "scores": scores,
+                    "prediction_label": prediction_label,
+                    "prediction_name": prediction_name,
+                    "prediction_confidence": scores[prediction_label],
+                }
+            )
+
+        active_candidates = [
+            candidate for candidate in candidates
+            if (
+                candidate["prediction_name"] != GESTURE_NONE
+                and candidate["prediction_confidence"] >= self.threshold
+            )
+        ]
+        if active_candidates:
+            selected = max(active_candidates, key=lambda candidate: candidate["prediction_confidence"])
+            prediction_label = int(selected["prediction_label"])
+            scores = selected["scores"]
+        else:
+            selected = max(candidates, key=lambda candidate: candidate["prediction_confidence"])
+            prediction_label = int(selected["prediction_label"])
+            scores = selected["scores"]
+
         prediction_name = self.labels.get(prediction_label, f"label_{prediction_label}")
         prediction_confidence = scores[prediction_label]
         prediction_active = (

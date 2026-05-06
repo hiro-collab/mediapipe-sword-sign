@@ -156,6 +156,7 @@ uv run python apps/settings_gui.py
 - `Grace`: 一瞬だけ手が外れた場合に、stable active を維持する猶予時間です。
 - `Target`: 継続判定の対象gestureです。通常は `sword_sign` を選びます。
 - `Mirror`: プレビューと判定入力を左右反転します。
+- 判定時は元の特徴量と左右反転した特徴量を両方評価するため、右手/左手の差を吸収しやすくしています。
 - `Landmarks`: プレビューにMediaPipeの手ランドマークを表示します。
 - `Preview`: OpenCVプレビューウィンドウの表示/非表示を切り替えます。
 

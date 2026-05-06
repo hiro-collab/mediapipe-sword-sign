@@ -14,6 +14,30 @@ class FakeModel:
         return [self.probabilities for _ in rows]
 
 
+class MirrorSensitiveModel:
+    classes_ = [0, 1, 2]
+
+    def __init__(self):
+        self.rows = []
+
+    def predict_proba(self, rows):
+        self.rows = [list(row) for row in rows]
+        probabilities = []
+        for row in self.rows:
+            if row[3] < 0.0:
+                probabilities.append([0.95, 0.03, 0.02])
+            else:
+                probabilities.append([0.01, 0.02, 0.97])
+        return probabilities
+
+
+class NoneDominantModel:
+    classes_ = [0, 1, 2]
+
+    def predict_proba(self, rows):
+        return [[0.91, 0.02, 0.98] for _ in rows]
+
+
 class SwordSignDetectorTests(unittest.TestCase):
     def test_predict_features_marks_sword_sign_active_above_threshold(self):
         detector = SwordSignDetector(
@@ -27,6 +51,47 @@ class SwordSignDetectorTests(unittest.TestCase):
         self.assertEqual(state.primary, "sword_sign")
         self.assertTrue(state.sword_sign.active)
         self.assertAlmostEqual(state.sword_sign.confidence, 0.91)
+
+    def test_predict_features_uses_mirrored_variant_for_opposite_hand(self):
+        model = MirrorSensitiveModel()
+        detector = SwordSignDetector(model=model, threshold=0.9)
+        features = [0.0] * FEATURE_DIMENSION
+        features[3] = 0.25
+
+        state = detector.predict_features(features, timestamp=123.0)
+
+        self.assertEqual(state.primary, "sword_sign")
+        self.assertTrue(state.sword_sign.active)
+        self.assertAlmostEqual(state.sword_sign.confidence, 0.95)
+        self.assertEqual(len(model.rows), 2)
+        self.assertEqual(model.rows[1][3], -0.25)
+
+    def test_predict_features_can_disable_mirrored_variant(self):
+        model = MirrorSensitiveModel()
+        detector = SwordSignDetector(
+            model=model,
+            threshold=0.9,
+            use_mirrored_features=False,
+        )
+        features = [0.0] * FEATURE_DIMENSION
+        features[3] = 0.25
+
+        state = detector.predict_features(features, timestamp=123.0)
+
+        self.assertIsNone(state.primary)
+        self.assertFalse(state.sword_sign.active)
+        self.assertEqual(len(model.rows), 1)
+
+    def test_predict_features_keeps_none_when_it_is_top_prediction(self):
+        detector = SwordSignDetector(model=NoneDominantModel(), threshold=0.9)
+        features = [0.0] * FEATURE_DIMENSION
+        features[3] = 0.25
+
+        state = detector.predict_features(features, timestamp=123.0)
+
+        self.assertIsNone(state.primary)
+        self.assertFalse(state.sword_sign.active)
+        self.assertEqual(state.best_gesture().name, "none")
 
     def test_predict_features_suppresses_low_confidence_prediction(self):
         detector = SwordSignDetector(

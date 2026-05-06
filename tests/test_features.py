@@ -2,7 +2,11 @@ import unittest
 from dataclasses import dataclass
 from math import inf, nan
 
-from mediapipe_sword_sign import FEATURE_DIMENSION, relative_landmark_features
+from mediapipe_sword_sign import (
+    FEATURE_DIMENSION,
+    mirror_feature_vector,
+    relative_landmark_features,
+)
 from mediapipe_sword_sign.features import validate_feature_vector
 
 
@@ -34,6 +38,20 @@ class FeatureTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             relative_landmark_features(landmarks)
+
+    def test_mirror_feature_vector_flips_only_wrist_relative_x(self):
+        features = []
+        for index in range(21):
+            features.extend([float(index + 1), float(index + 100), float(-index)])
+
+        mirrored = mirror_feature_vector(features)
+
+        self.assertEqual(len(mirrored), FEATURE_DIMENSION)
+        for index in range(0, FEATURE_DIMENSION, 3):
+            self.assertEqual(mirrored[index], -features[index])
+            self.assertEqual(mirrored[index + 1], features[index + 1])
+            self.assertEqual(mirrored[index + 2], features[index + 2])
+        self.assertEqual(features[0], 1.0)
 
     def test_validate_feature_vector_rejects_non_finite_values(self):
         with self.assertRaises(ValueError):
