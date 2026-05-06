@@ -4,7 +4,9 @@ import asyncio
 import base64
 import copy
 import json
+import math
 import queue
+import re
 import sys
 import threading
 import time
@@ -14,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import cv2
 import numpy as np
@@ -37,6 +40,10 @@ MAX_EVENTS_PER_TICK = 50
 TICK_INTERVAL_MS = 30
 PREVIEW_MAX_FPS = 120.0
 JSON_VIEW_MAX_FPS = 5.0
+MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024
+MAX_WS_QUEUE = 8
+SENSITIVE_QUERY_KEYS = {"token", "auth_token", "access_token", "api_key", "key"}
+URL_RE = re.compile(r"\b(?:wss?|https?|rtsp)://[^\s]+")
 
 
 @dataclass(frozen=True)
@@ -142,15 +149,19 @@ class HubTopicRuntime:
 
     async def _listen(self, url: str, auth_token: str | None) -> None:
         connect, header_arg = _load_connect()
-        options: dict[str, object] = {}
+        display_url = redact_url_for_display(url)
+        options: dict[str, object] = {
+            "max_size": MAX_WS_MESSAGE_BYTES,
+            "max_queue": MAX_WS_QUEUE,
+        }
         if auth_token:
             options[header_arg] = [("Authorization", f"Bearer {auth_token}")]
 
-        self._put_event("connecting", url)
+        self._put_event("connecting", display_url)
         while not self._stop_event.is_set():
             try:
                 async with connect(url, **options) as websocket:
-                    self._put_event("connected", url)
+                    self._put_event("connected", display_url)
                     while not self._stop_event.is_set():
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=0.25)
@@ -162,7 +173,7 @@ class HubTopicRuntime:
                     return
                 self._put_event("error", safe_error_text(exc))
                 await asyncio.sleep(1.0)
-                self._put_event("connecting", url)
+                self._put_event("connecting", display_url)
 
     def _handle_received_message(self, message: str | bytes) -> None:
         if isinstance(message, bytes):
@@ -724,7 +735,42 @@ def draw_preview_overlay(
 
 def safe_error_text(exc: Exception) -> str:
     text = str(exc).strip()
-    return text or exc.__class__.__name__
+    return redact_text_for_display(text or exc.__class__.__name__)
+
+
+def redact_text_for_display(value: object) -> str:
+    text = str(value)
+    return URL_RE.sub(lambda match: redact_url_for_display(match.group(0)), text)
+
+
+def redact_url_for_display(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return text
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return text
+    if not parsed.scheme:
+        return text
+
+    netloc = parsed.netloc
+    if "@" in netloc:
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        netloc = f"<redacted>@{host}"
+
+    query_items = []
+    for key, item_value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() in SENSITIVE_QUERY_KEYS:
+            query_items.append((key, "<redacted>"))
+        else:
+            query_items.append((key, item_value))
+    query = urlencode(query_items, doseq=True)
+    return urlunsplit((parsed.scheme, netloc, parsed.path, query, parsed.fragment))
 
 
 def _load_connect():
@@ -740,26 +786,30 @@ def _load_connect():
 
 def _float(value: object, *, default: float) -> float:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def format_ms(value: float | None) -> str:
-    return "-" if value is None else f"{value:.1f} ms"
+    if value is None or not math.isfinite(value):
+        return "-"
+    return f"{value:.1f} ms"
 
 
 def _optional_float(value: object) -> float | None:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _optional_int(value: object) -> int | None:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

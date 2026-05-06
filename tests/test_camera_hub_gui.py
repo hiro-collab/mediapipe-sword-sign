@@ -1,4 +1,5 @@
 import base64
+import math
 import time
 import unittest
 
@@ -6,12 +7,17 @@ import cv2
 import numpy as np
 
 from apps.camera_hub_gui import (
+    MAX_WS_MESSAGE_BYTES,
+    MAX_WS_QUEUE,
     HubTopicRuntime,
     compact_envelope_for_display,
     decode_binary_compressed_image,
     decode_compressed_image,
     decode_jpeg_bytes,
     envelope_age_seconds,
+    format_ms,
+    redact_url_for_display,
+    safe_error_text,
     summarize_camera_status,
     summarize_gesture_payload,
 )
@@ -89,6 +95,35 @@ class CameraHubGuiTests(unittest.TestCase):
         self.assertAlmostEqual(summary.gesture_inference_ms, 11.5)
         self.assertAlmostEqual(summary.gesture_publish_age_ms, 46.75)
 
+    def test_summarize_camera_status_rejects_non_finite_metrics(self):
+        summary = summarize_camera_status(
+            {
+                "type": "camera_status",
+                "fps": "nan",
+                "frame_id": float("inf"),
+                "camera": {"selected_index": 0, "opened": True},
+                "capture": {
+                    "frame_age_ms": float("nan"),
+                    "read_latency_ms": float("inf"),
+                    "read_failures": float("inf"),
+                },
+                "processors": {
+                    "sword_sign": {
+                        "inference_ms": float("nan"),
+                        "publish_age_ms": float("inf"),
+                    }
+                },
+            }
+        )
+
+        self.assertIsNone(summary.fps)
+        self.assertIsNone(summary.frame_id)
+        self.assertIsNone(summary.frame_age_ms)
+        self.assertIsNone(summary.read_latency_ms)
+        self.assertIsNone(summary.read_failures)
+        self.assertIsNone(summary.gesture_inference_ms)
+        self.assertIsNone(summary.gesture_publish_age_ms)
+
     def test_decode_compressed_image_decodes_jpeg_frame(self):
         frame = np.full((12, 16, 3), 128, dtype=np.uint8)
         ok, encoded = cv2.imencode(".jpg", frame)
@@ -144,6 +179,37 @@ class CameraHubGuiTests(unittest.TestCase):
     def test_envelope_age_seconds_returns_none_without_stamp(self):
         self.assertIsNone(envelope_age_seconds({}))
         self.assertIsNone(envelope_age_seconds({"header": {"stamp": "bad"}}))
+        self.assertIsNone(envelope_age_seconds({"header": {"stamp": math.nan}}))
+
+    def test_format_ms_rejects_non_finite_values(self):
+        self.assertEqual(format_ms(None), "-")
+        self.assertEqual(format_ms(math.nan), "-")
+        self.assertEqual(format_ms(math.inf), "-")
+        self.assertEqual(format_ms(12.34), "12.3 ms")
+
+    def test_safe_error_text_redacts_url_credentials_and_query_tokens(self):
+        error = RuntimeError(
+            "failed ws://user:pass@example.test:8765/path?token=secret&debug=1"
+        )
+
+        text = safe_error_text(error)
+
+        self.assertNotIn("secret", text)
+        self.assertNotIn("user:pass", text)
+        self.assertIn("token=%3Credacted%3E", text)
+        self.assertIn("debug=1", text)
+
+    def test_redact_url_for_display_redacts_query_token(self):
+        url = redact_url_for_display("ws://127.0.0.1:8765?token=secret")
+
+        self.assertNotIn("secret", url)
+        self.assertIn("token=%3Credacted%3E", url)
+
+    def test_websocket_client_limits_are_bounded(self):
+        self.assertGreater(MAX_WS_MESSAGE_BYTES, 0)
+        self.assertLessEqual(MAX_WS_MESSAGE_BYTES, 8 * 1024 * 1024)
+        self.assertGreater(MAX_WS_QUEUE, 0)
+        self.assertLessEqual(MAX_WS_QUEUE, 8)
 
     def test_runtime_keeps_latest_binary_frame_outside_event_queue(self):
         frame = np.full((12, 16, 3), 64, dtype=np.uint8)

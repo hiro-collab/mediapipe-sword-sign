@@ -1,4 +1,5 @@
 import argparse
+import math
 import unittest
 
 from apps.serve_camera_hub import (
@@ -224,6 +225,28 @@ class ServeCameraHubTests(unittest.TestCase):
         self.assertEqual(capture["read_latency_ms"], 4.25)
         self.assertEqual(capture["read_failures"], 2)
         self.assertEqual(capture["read_fps"], 30.0)
+
+    def test_capture_status_properties_sanitizes_non_finite_diagnostics(self):
+        class Camera:
+            def actual_properties(self):
+                return {"backend": "ffmpeg-pipe"}
+
+        snapshot = CameraFrameSnapshot(
+            frame=None,
+            frame_number=10,
+            stamp=math.nan,
+            fps=math.inf,
+            frame_read_ok=True,
+            read_latency_ms=math.nan,
+            read_failures=math.inf,
+        )
+
+        capture = capture_status_properties(Camera(), snapshot, now=100.0)
+
+        self.assertEqual(capture["frame_age_ms"], 0.0)
+        self.assertEqual(capture["read_latency_ms"], 0.0)
+        self.assertEqual(capture["read_failures"], 0)
+        self.assertEqual(capture["read_fps"], 0.0)
 
     def test_copy_processor_metrics_returns_independent_dicts(self):
         metrics = {"sword_sign": {"enabled": True, "inference_ms": 1.0}}

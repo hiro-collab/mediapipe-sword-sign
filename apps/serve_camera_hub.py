@@ -735,17 +735,41 @@ def capture_status_properties(
     *,
     now: float | None = None,
 ) -> dict[str, object]:
-    timestamp = time.time() if now is None else now
+    timestamp = finite_non_negative_float(time.time() if now is None else now)
+    stamp = finite_non_negative_float(snapshot.stamp, default=timestamp)
     capture = camera.actual_properties()
     capture.update(
         {
-            "frame_age_ms": round(max(0.0, timestamp - snapshot.stamp) * 1000.0, 3),
-            "read_latency_ms": round(snapshot.read_latency_ms, 3),
-            "read_failures": int(snapshot.read_failures),
-            "read_fps": round(snapshot.fps, 3),
+            "frame_age_ms": round(max(0.0, timestamp - stamp) * 1000.0, 3),
+            "read_latency_ms": round(
+                finite_non_negative_float(snapshot.read_latency_ms),
+                3,
+            ),
+            "read_failures": finite_non_negative_int(snapshot.read_failures),
+            "read_fps": round(finite_non_negative_float(snapshot.fps), 3),
         }
     )
     return capture
+
+
+def finite_non_negative_float(value: object, *, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not isfinite(parsed) or parsed < 0:
+        return default
+    return parsed
+
+
+def finite_non_negative_int(value: object, *, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if parsed < 0:
+        return default
+    return parsed
 
 
 def copy_processor_metrics(
