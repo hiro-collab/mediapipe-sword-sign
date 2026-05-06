@@ -67,6 +67,16 @@ class ClosingWebSocketClient:
         raise StopAsyncIteration
 
 
+class AbruptClosingWebSocketClient:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        from websockets.exceptions import ConnectionClosedError
+
+        raise ConnectionClosedError(None, None)
+
+
 class AdapterTests(unittest.TestCase):
     def test_udp_publisher_sends_gesture_state_json(self):
         fake_socket = FakeSocket()
@@ -179,6 +189,17 @@ class AdapterTests(unittest.TestCase):
             broadcaster.clients.add(client)
 
             await broadcaster.publish(make_state())
+
+            self.assertNotIn(client, broadcaster.clients)
+
+        asyncio.run(run())
+
+    def test_websocket_broadcaster_ignores_abrupt_client_disconnect(self):
+        async def run():
+            client = AbruptClosingWebSocketClient()
+            broadcaster = WebSocketGestureBroadcaster()
+
+            await broadcaster._handler(client, "/")
 
             self.assertNotIn(client, broadcaster.clients)
 

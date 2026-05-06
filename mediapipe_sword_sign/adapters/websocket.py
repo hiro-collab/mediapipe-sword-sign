@@ -126,8 +126,12 @@ class WebSocketGestureBroadcaster:
 
         self.clients.add(websocket)
         try:
-            async for _message in websocket:
-                pass
+            try:
+                async for _message in websocket:
+                    pass
+            except Exception as exc:
+                if not _is_websocket_connection_closed(exc):
+                    raise
         finally:
             self.clients.discard(websocket)
 
@@ -166,6 +170,14 @@ def _load_serve():
                 "Install project dependencies before using this adapter."
             ) from exc
     return serve
+
+
+def _is_websocket_connection_closed(exc: BaseException) -> bool:
+    try:
+        from websockets.exceptions import ConnectionClosed
+    except ImportError:
+        return False
+    return isinstance(exc, ConnectionClosed)
 
 
 def _is_local_bind_host(host: str) -> bool:
