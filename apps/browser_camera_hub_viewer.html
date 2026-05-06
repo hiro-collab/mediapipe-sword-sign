@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera Hub Browser Monitor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #111318;
+      color: #eef2f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #111318;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(520px, 1fr) 360px;
+      min-height: 100vh;
+    }
+
+    .stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: #080a0d;
+      overflow: hidden;
+    }
+
+    .video-shell {
+      position: relative;
+      width: min(100%, 1280px);
+      aspect-ratio: 4 / 3;
+      background: #000;
+      border: 1px solid #2b313a;
+    }
+
+    #mediaFrame,
+    #overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
+
+    #overlay {
+      pointer-events: none;
+    }
+
+    .mirrored #mediaFrame {
+      transform: scaleX(-1);
+    }
+
+    .status-strip {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      bottom: 16px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      pointer-events: none;
+    }
+
+    .pill {
+      padding: 6px 10px;
+      border-radius: 4px;
+      background: rgba(11, 14, 18, 0.76);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #f7fafc;
+      font-size: 13px;
+    }
+
+    .pill.active {
+      background: rgba(33, 150, 83, 0.82);
+    }
+
+    .pill.inactive {
+      background: rgba(192, 57, 43, 0.82);
+    }
+
+    aside {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 18px;
+      border-left: 1px solid #2b313a;
+      background: #171a21;
+      overflow: auto;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 650;
+    }
+
+    h2 {
+      margin: 0;
+      color: #dbe4ee;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .section {
+      display: grid;
+      gap: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: #cbd5df;
+      font-size: 13px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      min-height: 34px;
+      padding: 7px 9px;
+      border: 1px solid #3a4350;
+      border-radius: 4px;
+      background: #0f1217;
+      color: #eef2f6;
+      font: inherit;
+    }
+
+    .toggles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .toggles label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+    }
+
+    button {
+      min-height: 34px;
+      padding: 7px 11px;
+      border: 1px solid #4a5564;
+      border-radius: 4px;
+      background: #252b35;
+      color: #f5f7fa;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #303845;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: 116px 1fr;
+      gap: 7px 10px;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    dt {
+      color: #9aa6b5;
+    }
+
+    dd {
+      margin: 0;
+      color: #f0f4f8;
+      overflow-wrap: anywhere;
+    }
+
+    #eventLog {
+      min-height: 112px;
+      max-height: 170px;
+      overflow: auto;
+      padding: 8px;
+      border: 1px solid #2b313a;
+      border-radius: 4px;
+      background: #0f1217;
+      font: 12px Consolas, monospace;
+      color: #dbe4ee;
+      white-space: pre-wrap;
+    }
+
+    #scoreList {
+      display: grid;
+      gap: 7px;
+    }
+
+    .score-row {
+      display: grid;
+      grid-template-columns: minmax(80px, 1fr) 54px;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+    }
+
+    .score-name {
+      display: grid;
+      gap: 4px;
+      color: #e6edf5;
+    }
+
+    .score-bar {
+      height: 5px;
+      overflow: hidden;
+      border-radius: 2px;
+      background: #2b313a;
+    }
+
+    .score-fill {
+      height: 100%;
+      width: 0%;
+      background: #43d17b;
+    }
+
+    .score-row.inactive .score-fill {
+      background: #7aa2ff;
+    }
+
+    .score-value {
+      color: #b9c4d0;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    #jsonDump {
+      min-height: 150px;
+      max-height: 260px;
+      overflow: auto;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid #2b313a;
+      border-radius: 4px;
+      background: #0f1217;
+      color: #dbe4ee;
+      font: 12px Consolas, monospace;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 920px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        border-left: 0;
+        border-top: 1px solid #2b313a;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="stage">
+      <div id="videoShell" class="video-shell mirrored">
+        <iframe id="mediaFrame" title="MediaMTX camera stream" allow="autoplay; fullscreen"></iframe>
+        <canvas id="overlay"></canvas>
+        <div class="status-strip">
+          <span id="primaryPill" class="pill">primary -</span>
+          <span id="bestPill" class="pill">best -</span>
+          <span id="targetPill" class="pill inactive">target -</span>
+          <span id="stablePill" class="pill inactive">stable -</span>
+          <span id="agePill" class="pill">age -</span>
+          <span id="fpsPill" class="pill">capture - fps</span>
+        </div>
+      </div>
+    </section>
+
+    <aside>
+      <h1>Camera Hub Monitor</h1>
+
+      <div class="section">
+        <label>
+          MediaMTX URL
+          <input id="mediaUrl" type="text" value="http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true">
+        </label>
+        <label>
+          Camera Hub WebSocket
+          <input id="wsUrl" type="text" value="ws://127.0.0.1:8765">
+        </label>
+        <label>
+          Target Gesture
+          <input id="targetGesture" type="text" value="sword_sign">
+        </label>
+        <div class="toggles">
+          <label><input id="mirrorToggle" type="checkbox" checked> Mirror</label>
+          <label><input id="landmarkToggle" type="checkbox" checked> Landmarks</label>
+          <label><input id="overlayToggle" type="checkbox" checked> Overlay</label>
+        </div>
+        <button id="connectButton" type="button">Connect</button>
+      </div>
+
+      <div class="section">
+        <dl>
+          <dt>Connection</dt><dd id="connection">Disconnected</dd>
+          <dt>Primary</dt><dd id="primary">-</dd>
+          <dt>Best</dt><dd id="best">-</dd>
+          <dt>Target</dt><dd id="target">-</dd>
+          <dt>Stable</dt><dd id="stable">-</dd>
+          <dt>Held For</dt><dd id="heldFor">-</dd>
+          <dt>Hand</dt><dd id="hand">-</dd>
+          <dt>Landmarks</dt><dd id="landmarks">-</dd>
+          <dt>Seq</dt><dd id="seq">-</dd>
+          <dt>Topic Age</dt><dd id="topicAge">-</dd>
+          <dt>Gesture Age</dt><dd id="gestureAge">-</dd>
+          <dt>Status Age</dt><dd id="statusAge">-</dd>
+          <dt>Camera</dt><dd id="camera">-</dd>
+          <dt>Capture FPS</dt><dd id="captureFps">-</dd>
+          <dt>Frame</dt><dd id="frame">-</dd>
+          <dt>Last Topic</dt><dd id="lastTopic">-</dd>
+          <dt>Last Message</dt><dd id="lastMessage">-</dd>
+          <dt>Error</dt><dd id="error">-</dd>
+        </dl>
+      </div>
+
+      <div class="section">
+        <h2>Latency Probe</h2>
+        <dl>
+          <dt>Video State</dt><dd id="probeVideo">-</dd>
+          <dt>Overlay State</dt><dd id="probeOverlay">-</dd>
+          <dt>Last Delta</dt><dd id="probeDelta">-</dd>
+          <dt>Samples</dt><dd id="probeSamples">-</dd>
+          <dt>Average</dt><dd id="probeAverage">-</dd>
+          <dt>P95</dt><dd id="probeP95">-</dd>
+          <dt>Min / Max</dt><dd id="probeMinMax">-</dd>
+        </dl>
+      </div>
+
+      <div class="section">
+        <h2>Gesture Scores</h2>
+        <div id="scoreList"></div>
+      </div>
+
+      <div class="section">
+        <h2>Event Log</h2>
+        <div id="eventLog"></div>
+      </div>
+
+      <div class="section">
+        <h2>Last Envelope JSON</h2>
+        <pre id="jsonDump"></pre>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const HAND_CONNECTIONS = [
+      [0, 1], [1, 2], [2, 3], [3, 4],
+      [0, 5], [5, 6], [6, 7], [7, 8],
+      [5, 9], [9, 10], [10, 11], [11, 12],
+      [9, 13], [13, 14], [14, 15], [15, 16],
+      [13, 17], [17, 18], [18, 19], [19, 20],
+      [0, 17]
+    ];
+
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      ws: null,
+      latestGesture: null,
+      latestStatus: null,
+      landmarks: [],
+      lastEnvelope: null,
+      reconnectTimer: null,
+      manualClose: false,
+      latencyProbe: {
+        videoBySeq: new Map(),
+        samples: [],
+        lastVideo: null,
+        lastOverlay: null,
+        lastDeltaMs: null
+      }
+    };
+
+    function nowText() {
+      return new Date().toLocaleTimeString("ja-JP", { hour12: false });
+    }
+
+    function log(message) {
+      const el = $("eventLog");
+      el.textContent += `${nowText()} ${message}\n`;
+      const lines = el.textContent.split("\n");
+      if (lines.length > 80) {
+        el.textContent = lines.slice(lines.length - 80).join("\n");
+      }
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function setText(id, value) {
+      $(id).textContent = value == null || value === "" ? "-" : String(value);
+    }
+
+    function formatAge(age) {
+      return age == null ? "-" : `${age.toFixed(3)}s`;
+    }
+
+    function formatMs(ms) {
+      return ms == null ? "-" : `${ms.toFixed(1)}ms`;
+    }
+
+    function percentile(values, ratio) {
+      if (values.length === 0) {
+        return null;
+      }
+      const sorted = values.slice().sort((a, b) => a - b);
+      const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1);
+      return sorted[index];
+    }
+
+    function renderLatencyProbe() {
+      const probe = state.latencyProbe;
+      const samples = probe.samples.map((sample) => sample.deltaMs);
+      const average = samples.length
+        ? samples.reduce((sum, value) => sum + value, 0) / samples.length
+        : null;
+      const minimum = samples.length ? Math.min(...samples) : null;
+      const maximum = samples.length ? Math.max(...samples) : null;
+      const p95 = percentile(samples, 0.95);
+      setText("probeVideo", probe.lastVideo
+        ? `${probe.lastVideo.state} seq=${probe.lastVideo.seq}`
+        : "-");
+      setText("probeOverlay", probe.lastOverlay
+        ? `${probe.lastOverlay.state} seq=${probe.lastOverlay.seq}`
+        : "-");
+      setText("probeDelta", formatMs(probe.lastDeltaMs));
+      setText("probeSamples", samples.length ? String(samples.length) : "-");
+      setText("probeAverage", formatMs(average));
+      setText("probeP95", formatMs(p95));
+      setText("probeMinMax", samples.length ? `${formatMs(minimum)} / ${formatMs(maximum)}` : "-");
+    }
+
+    function handleLatencyVideoState(message) {
+      const seq = Number(message.seq);
+      const shownEpochMs = Number(message.shown_epoch_ms);
+      const videoState = String(message.state || "");
+      if (!Number.isFinite(seq) || !Number.isFinite(shownEpochMs) || !videoState) {
+        return;
+      }
+      const item = {
+        seq,
+        state: videoState,
+        shownEpochMs
+      };
+      const probe = state.latencyProbe;
+      probe.videoBySeq.set(seq, item);
+      probe.lastVideo = item;
+      if (probe.videoBySeq.size > 240) {
+        const keys = Array.from(probe.videoBySeq.keys()).sort((a, b) => a - b);
+        for (const key of keys.slice(0, probe.videoBySeq.size - 240)) {
+          probe.videoBySeq.delete(key);
+        }
+      }
+      renderLatencyProbe();
+    }
+
+    function recordLatencyOverlay(payload, points) {
+      const debug = payload.debug_probe;
+      if (!debug || typeof debug !== "object") {
+        return;
+      }
+      const seq = Number(debug.seq);
+      if (!Number.isFinite(seq)) {
+        return;
+      }
+      const overlayState = String(debug.state || (points.length ? "hand_in" : "hand_out"));
+      requestAnimationFrame(() => {
+        const probe = state.latencyProbe;
+        const video = probe.videoBySeq.get(seq);
+        const overlayEpochMs = Date.now();
+        probe.lastOverlay = {
+          seq,
+          state: overlayState,
+          overlayEpochMs
+        };
+        if (video) {
+          const deltaMs = overlayEpochMs - video.shownEpochMs;
+          probe.lastDeltaMs = deltaMs;
+          probe.samples.push({
+            seq,
+            state: overlayState,
+            deltaMs
+          });
+          if (probe.samples.length > 500) {
+            probe.samples.splice(0, probe.samples.length - 500);
+          }
+        }
+        renderLatencyProbe();
+      });
+    }
+
+    function applyEnvelopeMeta(envelope) {
+      const age = envelopeAge(envelope);
+      setText("topicAge", formatAge(age));
+      setText("lastTopic", envelope.topic);
+      setText("lastMessage", new Date().toLocaleTimeString("ja-JP", { hour12: false }));
+      $("agePill").textContent = age == null ? "age -" : `age ${age.toFixed(3)}s`;
+      $("jsonDump").textContent = JSON.stringify(envelope, null, 2);
+      return age;
+    }
+
+    function bestGesture(payload) {
+      const gestures = payload.gestures || {};
+      let bestName = "none";
+      let bestConfidence = 0;
+      for (const [name, value] of Object.entries(gestures)) {
+        const confidence = Number(value && value.confidence) || 0;
+        if (confidence >= bestConfidence) {
+          bestName = name;
+          bestConfidence = confidence;
+        }
+      }
+      return { name: bestName, confidence: bestConfidence };
+    }
+
+    function targetSummary(payload) {
+      const target = $("targetGesture").value.trim() || "sword_sign";
+      const item = payload.gestures && payload.gestures[target] || {};
+      return {
+        name: target,
+        active: Boolean(item.active),
+        confidence: Number(item.confidence) || 0
+      };
+    }
+
+    function stableSummary(payload) {
+      const target = $("targetGesture").value.trim() || "sword_sign";
+      const stable = payload.stable || {};
+      const gestures = stable.gestures || {};
+      const item = gestures[target];
+      if (!item) {
+        return null;
+      }
+      return {
+        active: Boolean(item.active),
+        heldFor: Number(item.held_for) || 0,
+        activated: Boolean(item.activated),
+        released: Boolean(item.released),
+        confidence: Number(item.confidence) || 0
+      };
+    }
+
+    function envelopeAge(envelope) {
+      const stamp = envelope && envelope.header && Number(envelope.header.stamp);
+      if (!Number.isFinite(stamp)) {
+        return null;
+      }
+      return Math.max(0, Date.now() / 1000 - stamp);
+    }
+
+    function renderScores(payload) {
+      const list = $("scoreList");
+      list.replaceChildren();
+      const gestures = payload.gestures || {};
+      const entries = Object.entries(gestures).sort((a, b) => {
+        const left = Number(a[1] && a[1].confidence) || 0;
+        const right = Number(b[1] && b[1].confidence) || 0;
+        return right - left;
+      });
+      if (entries.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "score-value";
+        empty.textContent = "-";
+        list.appendChild(empty);
+        return;
+      }
+
+      for (const [name, value] of entries) {
+        const confidence = Math.max(0, Math.min(1, Number(value && value.confidence) || 0));
+        const row = document.createElement("div");
+        row.className = `score-row ${value && value.active ? "active" : "inactive"}`;
+
+        const nameCell = document.createElement("div");
+        nameCell.className = "score-name";
+        const label = document.createElement("span");
+        label.textContent = `${name}${value && value.active ? " active" : ""}`;
+        const bar = document.createElement("div");
+        bar.className = "score-bar";
+        const fill = document.createElement("div");
+        fill.className = "score-fill";
+        fill.style.width = `${Math.round(confidence * 100)}%`;
+        bar.appendChild(fill);
+        nameCell.append(label, bar);
+
+        const score = document.createElement("div");
+        score.className = "score-value";
+        score.textContent = confidence.toFixed(3);
+
+        row.append(nameCell, score);
+        list.appendChild(row);
+      }
+    }
+
+    function applyGesture(envelope) {
+      const payload = envelope.payload || {};
+      state.latestGesture = payload;
+      state.lastEnvelope = envelope;
+      const best = bestGesture(payload);
+      const target = targetSummary(payload);
+      const stable = stableSummary(payload);
+      const age = applyEnvelopeMeta(envelope);
+
+      setText("primary", payload.primary || "none");
+      setText("best", `${best.name} (${best.confidence.toFixed(3)})`);
+      setText("target", `${target.active ? "active" : "inactive"} (${target.confidence.toFixed(3)})`);
+      setText("stable", stable ? `${stable.active ? "active" : "inactive"} (${stable.confidence.toFixed(3)})` : "-");
+      setText("heldFor", stable ? `${stable.heldFor.toFixed(2)}s` : "-");
+      setText("hand", payload.hand_detected ? "detected" : "none");
+      setText("seq", envelope.header && envelope.header.seq);
+      setText("gestureAge", formatAge(age));
+
+      $("primaryPill").textContent = `primary ${payload.primary || "none"}`;
+      $("bestPill").textContent = `best ${best.name} ${best.confidence.toFixed(2)}`;
+      $("targetPill").textContent = `target ${target.active ? "active" : "inactive"}`;
+      $("targetPill").className = `pill ${target.active ? "active" : "inactive"}`;
+      $("stablePill").textContent = `stable ${stable ? (stable.active ? "active" : "inactive") : "-"}`;
+      $("stablePill").className = `pill ${stable && stable.active ? "active" : "inactive"}`;
+
+      const points = payload.landmarks && Array.isArray(payload.landmarks.points)
+        ? payload.landmarks.points
+        : [];
+      state.landmarks = points;
+      setText("landmarks", points.length ? `${points.length} points` : "-");
+      renderScores(payload);
+      drawOverlay();
+      recordLatencyOverlay(payload, points);
+    }
+
+    function applyStatus(envelope) {
+      const payload = envelope.payload || {};
+      state.latestStatus = payload;
+      const age = applyEnvelopeMeta(envelope);
+      const camera = payload.camera || {};
+      const capture = payload.capture || {};
+      const readState = camera.frame_read_ok ? "read" : "read failed";
+      const openState = camera.opened ? "open" : "closed";
+      setText("camera", `${camera.selected_index ?? "-"} / ${openState} / ${readState}`);
+      setText("captureFps", payload.fps == null ? "-" : Number(payload.fps).toFixed(1));
+      setText("frame", payload.frame_id);
+      setText("statusAge", formatAge(age));
+      $("fpsPill").textContent = payload.fps == null ? "capture - fps" : `capture ${Number(payload.fps).toFixed(1)} fps`;
+      if (capture.width && capture.height) {
+        setText("camera", `${camera.selected_index ?? "-"} / ${capture.width}x${capture.height} / ${capture.backend || "-"} / ${readState}`);
+      }
+    }
+
+    function handleMessage(event) {
+      if (typeof event.data !== "string") {
+        return;
+      }
+      let envelope;
+      try {
+        envelope = JSON.parse(event.data);
+      } catch (error) {
+        setText("error", `bad json: ${error.message}`);
+        return;
+      }
+      if (envelope.topic === "/vision/sword_sign/state") {
+        applyGesture(envelope);
+      } else if (envelope.topic === "/camera/status") {
+        applyStatus(envelope);
+      } else {
+        applyEnvelopeMeta(envelope);
+      }
+    }
+
+    function connect() {
+      state.manualClose = false;
+      if (state.reconnectTimer) {
+        clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = null;
+      }
+      if (state.ws) {
+        state.manualClose = true;
+        state.ws.close();
+        state.ws = null;
+        state.manualClose = false;
+      }
+      $("mediaFrame").src = $("mediaUrl").value.trim();
+      setText("connection", "Connecting");
+      const ws = new WebSocket($("wsUrl").value.trim());
+      state.ws = ws;
+      ws.onopen = () => {
+        setText("connection", "Connected");
+        setText("error", "-");
+        log("connected");
+      };
+      ws.onmessage = handleMessage;
+      ws.onerror = () => {
+        setText("error", "websocket error");
+      };
+      ws.onclose = () => {
+        if (state.ws === ws) {
+          state.ws = null;
+        }
+        setText("connection", "Disconnected");
+        log("disconnected");
+        if (!state.manualClose && !state.reconnectTimer) {
+          state.reconnectTimer = setTimeout(() => {
+            state.reconnectTimer = null;
+            log("reconnecting");
+            connect();
+          }, 1000);
+        }
+      };
+    }
+
+    function resizeCanvas() {
+      const canvas = $("overlay");
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width * window.devicePixelRatio));
+      const height = Math.max(1, Math.floor(rect.height * window.devicePixelRatio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      drawOverlay();
+    }
+
+    function drawOverlay() {
+      const canvas = $("overlay");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!$("overlayToggle").checked || !$("landmarkToggle").checked) {
+        return;
+      }
+      const points = state.landmarks;
+      if (!points || points.length === 0) {
+        return;
+      }
+
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.lineWidth = Math.max(2, width / 360);
+      ctx.strokeStyle = "rgba(0, 220, 130, 0.88)";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.94)";
+
+      const pointToCanvas = (point) => {
+        const x = Number(point && point.x);
+        const y = Number(point && point.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return null;
+        }
+        const canvasX = $("mirrorToggle").checked ? x : 1 - x;
+        return [canvasX * width, y * height];
+      };
+
+      for (const [a, b] of HAND_CONNECTIONS) {
+        const pa = pointToCanvas(points[a]);
+        const pb = pointToCanvas(points[b]);
+        if (!pa || !pb) {
+          continue;
+        }
+        ctx.beginPath();
+        ctx.moveTo(pa[0], pa[1]);
+        ctx.lineTo(pb[0], pb[1]);
+        ctx.stroke();
+      }
+
+      const radius = Math.max(3, width / 180);
+      for (const point of points) {
+        const p = pointToCanvas(point);
+        if (!p) {
+          continue;
+        }
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function applyMirror() {
+      $("videoShell").classList.toggle("mirrored", $("mirrorToggle").checked);
+      drawOverlay();
+    }
+
+    function handleWindowMessage(event) {
+      const message = event.data;
+      if (!message || typeof message !== "object") {
+        return;
+      }
+      if (message.type === "mpss_latency_video_state") {
+        handleLatencyVideoState(message);
+      }
+    }
+
+    function applyQueryDefaults() {
+      const params = new URLSearchParams(window.location.search);
+      const mediaUrl = params.get("mediaUrl");
+      const wsUrl = params.get("wsUrl");
+      const target = params.get("target");
+      const mirror = params.get("mirror");
+      if (mediaUrl) {
+        $("mediaUrl").value = mediaUrl;
+      }
+      if (wsUrl) {
+        $("wsUrl").value = wsUrl;
+      }
+      if (target) {
+        $("targetGesture").value = target;
+      }
+      if (mirror != null) {
+        $("mirrorToggle").checked = !["0", "false", "off", "no"].includes(mirror.toLowerCase());
+      }
+    }
+
+    $("connectButton").addEventListener("click", connect);
+    $("mirrorToggle").addEventListener("change", applyMirror);
+    $("landmarkToggle").addEventListener("change", drawOverlay);
+    $("overlayToggle").addEventListener("change", drawOverlay);
+    window.addEventListener("message", handleWindowMessage);
+    window.addEventListener("resize", resizeCanvas);
+    new ResizeObserver(resizeCanvas).observe($("overlay"));
+    applyQueryDefaults();
+    applyMirror();
+    resizeCanvas();
+    renderLatencyProbe();
+    connect();
+  </script>
+</body>
+</html>

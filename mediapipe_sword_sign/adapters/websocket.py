@@ -7,6 +7,8 @@ from types import TracebackType
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from mediapipe_sword_sign.payloads import gesture_state_json
+from mediapipe_sword_sign.temporal import GestureHoldState
 from mediapipe_sword_sign.types import GestureState
 
 
@@ -39,6 +41,7 @@ class WebSocketGestureBroadcaster:
         self.max_clients = max_clients
         self.clients: set[Any] = set()
         self._server: Any | None = None
+        self._publish_lock = asyncio.Lock()
 
     @property
     def address(self) -> tuple[str, int]:
@@ -71,20 +74,31 @@ class WebSocketGestureBroadcaster:
                         await result
         self.clients.clear()
 
-    async def publish(self, state: GestureState) -> None:
+    async def publish(
+        self,
+        state: GestureState,
+        *,
+        sequence: int | None = None,
+        stable: GestureHoldState | None = None,
+    ) -> None:
+        await self.publish_message(
+            gesture_state_json(state, sequence=sequence, stable=stable),
+        )
+
+    async def publish_message(self, message: str | bytes) -> None:
         if not self.clients:
             return
 
-        message = state.to_json()
-        clients = list(self.clients)
-        results = await asyncio.gather(
-            *(client.send(message) for client in clients),
-            return_exceptions=True,
-        )
+        async with self._publish_lock:
+            clients = list(self.clients)
+            results = await asyncio.gather(
+                *(client.send(message) for client in clients),
+                return_exceptions=True,
+            )
 
-        for client, result in zip(clients, results):
-            if isinstance(result, Exception):
-                self.clients.discard(client)
+            for client, result in zip(clients, results):
+                if isinstance(result, Exception):
+                    self.clients.discard(client)
 
     async def _handler(self, websocket: Any, path: str | None = None) -> None:
         if not self._is_authorized(websocket, path):
@@ -119,6 +133,10 @@ class WebSocketGestureBroadcaster:
         traceback: TracebackType | None,
     ) -> None:
         await self.stop()
+
+
+class WebSocketTopicBroadcaster(WebSocketGestureBroadcaster):
+    """Generic topic broadcaster; kept separate from the gesture-specific name."""
 
 
 def _load_serve():

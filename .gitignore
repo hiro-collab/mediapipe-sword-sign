@@ -7,3 +7,6 @@ __pycache__/
 .env.*
 !.env.example
 .uv/
+.runtime/
+tests/pict_for_debug/*.png
+!tests/pict_for_debug/.gitkeep

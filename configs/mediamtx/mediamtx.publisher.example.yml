@@ -1,0 +1,33 @@
+# MediaMTX sample configuration that explicitly allows external publishers.
+#
+# Use this for the first smoke test:
+#
+#   mediamtx configs/mediamtx/mediamtx.publisher.example.yml
+#
+# Then publish a camera from another terminal:
+#
+#   ffmpeg -f dshow -video_size 640x480 -framerate 30 -i video="HD Pro Webcam C920" -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency -b:v 800k -f rtsp rtsp://127.0.0.1:8554/cam0
+
+logLevel: info
+
+rtsp: true
+rtspAddress: :8554
+
+hls: true
+hlsAddress: :8888
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+
+paths:
+  cam0:
+    source: publisher
+  cam1:
+    source: publisher
+  cam2:
+    source: publisher
+  cam3:
+    source: publisher
+  cam4:
+    source: publisher

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased - Camera hub topic envelope split
+
+- `mediapipe_sword_sign/topics.py`
+  - ROS2へ寄せやすいtopic envelope JSON helperを追加。
+- `mediapipe_sword_sign/payloads.py`
+  - `GestureState` にschema version、sequence、stable gesture stateを付けたpayload helperを追加。
+- `apps/serve_camera_hub.py`
+  - カメラを1プロセスで所有し、`/vision/sword_sign/state` と `/camera/status` をWebSocket topicとして配信する最小hubを追加。
+- `apps/camera_hub_gui.py`
+  - Camera HubのWebSocket topicを購読し、status、gesture state、任意のJPEG frame topicを表示するGUIを追加。
+- `room_light` / home automation寄りの判定ロジックは、この汎用モジュールには含めない方針で分離。
+
 ## 2026-04-28 - UDP auth token support
 
 モジュール利用側からの指摘を受け、`sword-voice-agent` など認証付きUDP receiverと安全に連携しやすいようにしました。
