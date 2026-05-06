@@ -1,16 +1,43 @@
 # Browser GUI Integration Guide
 
-This guide describes how to build a browser-based GUI that subscribes to
-`apps/serve_camera_hub.py`.
+This guide describes how to build a browser-based GUI for Camera Hub topics.
 
-The camera hub owns the physical camera in one Python process and publishes
-gesture state, camera status, and optional JPEG preview frames over WebSocket.
-Browser clients should subscribe to these topics instead of opening the camera
-directly.
+The standard GUI shape is **MediaMTX for video** plus **Camera Hub WebSocket for
+state**. Browser clients should not open a USB camera directly, and Camera Hub
+should not distribute production video as WebSocket JPEG frames. Keep Python
+focused on gesture/status/landmark topics.
 
-For multiple cameras or more than a handful of browser clients, use MediaMTX for
-video delivery and keep this Python hub focused on gesture/status topics. See
-[MediaMTX Integration Guide](mediamtx_integration.md).
+For the full MediaMTX setup, see [MediaMTX Integration Guide](mediamtx_integration.md).
+
+## GUI Design Policy
+
+Use this role split:
+
+```text
+Camera / FFmpeg publish
+  -> MediaMTX / cam0
+      -> Browser Monitor video: http://127.0.0.1:8889/cam0
+      -> Camera Hub inference input: rtsp://127.0.0.1:8554/cam0
+Camera Hub
+  -> Browser Monitor state: ws://127.0.0.1:8765
+```
+
+The repository includes two GUI tools:
+
+- `apps/browser_camera_hub_viewer.html`: the standard local Browser Monitor. It
+  embeds the MediaMTX video page and subscribes to Camera Hub topics for
+  gesture/status/landmarks overlay.
+- `apps/camera_hub_gui.py`: a Python debug GUI. It subscribes to Camera Hub
+  topics and can show JPEG preview frames only when `--publish-jpeg-every` is
+  enabled.
+
+MediaMTX's own page at `http://127.0.0.1:8889/cam0` is video-only. It is useful
+for checking stream health, but it does not show gesture state or landmarks.
+
+If a downstream application has a `start-home-control-stack` script, it should
+start or require the same MediaMTX stack before opening the Browser Monitor. If
+MediaMTX or FFmpeg publish is not running, the Browser Monitor can still connect
+to Camera Hub topics, but the video pane will be empty.
 
 ## Recommended Production Shape
 
@@ -26,7 +53,7 @@ WebSocket frames. Use:
 - `--publish-jpeg-every 0` in Python workers unless debugging the Python image
   pipeline.
 
-For a ready-made local debug monitor, open:
+For a ready-made local Browser Monitor, open:
 
 ```powershell
 Start-Process .\apps\browser_camera_hub_viewer.html
@@ -34,8 +61,9 @@ Start-Process .\apps\browser_camera_hub_viewer.html
 
 It has no npm or browser library dependency. It embeds the MediaMTX viewer,
 connects to the Camera Hub WebSocket, and shows mirror mode, gesture/status
-fields, gesture confidence scores, topic age, event log, last envelope JSON, and
-hand landmarks when the hub is started with `--publish-landmarks`.
+fields, gesture confidence scores, latency diagnostics, topic age, event log,
+last envelope JSON, and hand landmarks when the hub is started with
+`--publish-landmarks`.
 
 To measure whether the final browser overlay itself is late, run the camera-free
 latency probe:
@@ -54,13 +82,37 @@ The probe binds to localhost by default. If you bind it to a non-local host, add
 `--allow-remote-probe` explicitly because the probe endpoints are intentionally
 unauthenticated test fixtures.
 
-## Recommended Hub Startup
+## Recommended Startup
 
-The following all-Python startup is useful for local debugging with one camera.
-For multi-camera browser distribution, prefer the MediaMTX setup above.
+Use the one-terminal MediaMTX stack for normal local development:
 
-For a local Windows setup with a 640x480 preview, 20fps image topic, and about
-5-6 browser clients:
+```powershell
+scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
+```
+
+It starts:
+
+- MediaMTX
+- FFmpeg camera publish to `rtsp://127.0.0.1:8554/cam0`
+- Camera Hub with `--camera-source rtsp://127.0.0.1:8554/cam0`
+- Browser Monitor with MediaMTX video and Camera Hub WebSocket parameters
+
+The startup log prints the exact URLs for:
+
+- Browser Monitor video
+- Camera Hub inference input
+- Camera Hub WebSocket topics
+
+If MediaMTX is missing, or `/cam0` is not being published, the browser video
+will not appear. Fix the stack startup rather than switching the browser GUI to
+WebSocket JPEG video.
+
+## Python JPEG Debug Mode
+
+The following all-Python startup is useful only when debugging the Python image
+topic itself. It is not the recommended Home Control or multi-client shape.
+
+For a local Windows setup with a 640x480 preview and 20fps image topic:
 
 ```powershell
 uv run python apps/serve_camera_hub.py `
@@ -84,7 +136,7 @@ Notes:
 - `--gesture-every 0.1` limits MediaPipe gesture inference to about 10fps.
 - `--gesture-model-complexity 0` reduces MediaPipe CPU usage at some accuracy cost.
 - `--jpeg-quality 50` to `70` is usually a good range for browser previews.
-- `--max-clients 6` makes the expected fan-out explicit.
+- `--max-clients 6` makes the expected topic fan-out explicit.
 
 If gesture accuracy is more important than CPU, use `--gesture-model-complexity 1`.
 If CPU or network load is still too high, try `--publish-jpeg-every 0.066`

@@ -11,6 +11,7 @@
 - 非finite値 (`NaN` / `Infinity`) が特徴量、しきい値、JSON payloadへ混入しないよう検証を追加。
 - Pythonを `<3.13` に制限し、MediaPipe/OpenCVを確認済みの固定版へ戻して実行環境の再現性を改善。
 - latency diagnostics追加後の再レビューで、GUIのURL/token redaction、WebSocket受信サイズ上限、非finite診断値の無害化を追加。
+- Browser Monitorの起動案内をMediaMTX前提に整理し、統合起動時に映像URL、推論入力RTSP、topic WebSocketを明示するよう変更。
 
 - `mediapipe_sword_sign/topics.py`
   - ROS2へ寄せやすいtopic envelope JSON helperを追加。

@@ -148,6 +148,25 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertEqual(stack.connect_host("0.0.0.0"), "127.0.0.1")
         self.assertEqual(stack.connect_host("127.0.0.1"), "127.0.0.1")
 
+    def test_mediamtx_webrtc_url_uses_rtsp_path_for_browser_video(self):
+        url = stack.mediamtx_webrtc_url("rtsp://127.0.0.1:8554/cam0")
+
+        self.assertEqual(
+            url,
+            "http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true",
+        )
+
+    def test_browser_monitor_url_passes_media_and_websocket_urls(self):
+        url = stack.browser_monitor_url(
+            Path("apps/browser_camera_hub_viewer.html"),
+            media_url="http://127.0.0.1:8889/cam0?controls=false",
+            ws_url="ws://127.0.0.1:8765",
+        )
+
+        self.assertIn("browser_camera_hub_viewer.html?", url)
+        self.assertIn("mediaUrl=http%3A%2F%2F127.0.0.1%3A8889%2Fcam0", url)
+        self.assertIn("wsUrl=ws%3A%2F%2F127.0.0.1%3A8765", url)
+
     def test_process_discovery_helper_is_ignored(self):
         process = {
             "pid": 123,

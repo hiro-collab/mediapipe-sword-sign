@@ -238,6 +238,26 @@ Browser GUI should use two connections:
 - Video: MediaMTX WebRTC/HLS URL, for example `http://127.0.0.1:8889/cam0`
 - State: Python topic WebSocket, for example `ws://127.0.0.1:8765`
 
+Do not treat WebSocket JPEG preview as the normal browser video path. In the
+MediaMTX architecture, WebSocket topics carry gesture/status/landmarks and
+diagnostics; MediaMTX carries video.
+
+The intended local GUI flow is:
+
+```text
+Browser Monitor video pane
+  <- http://127.0.0.1:8889/cam0 from MediaMTX
+Browser Monitor overlay/status pane
+  <- ws://127.0.0.1:8765 from Camera Hub
+Camera Hub processor input
+  <- rtsp://127.0.0.1:8554/cam0 from MediaMTX
+```
+
+If a Home Control startup script opens the Browser Monitor but does not start
+MediaMTX and an FFmpeg publisher, the video pane will be empty. Fix the startup
+script to start or require MediaMTX; do not move normal video delivery back to
+Python WebSocket JPEG frames.
+
 Simple WebRTC iframe:
 
 ```html
@@ -292,6 +312,15 @@ starts Camera Hub with `--hub-camera-backend ffmpeg-pipe` by default. That keeps
 the browser video on MediaMTX while making the Python inference reader avoid
 OpenCV RTSP buffering. Use `--hub-camera-backend ffmpeg` only when comparing
 against the older OpenCV-backed path.
+
+On startup, the supervisor prints the exact route URLs:
+
+- `Browser Monitor video`: MediaMTX WebRTC URL
+- `Camera Hub input`: RTSP URL read by the processor
+- `Camera Hub topics`: WebSocket URL for gesture/status/landmarks
+
+The opened browser monitor receives these URLs as query parameters, so custom
+ports or camera paths are reflected in the GUI instead of relying on defaults.
 
 If `ffprobe` is slow or flaky on a live RTSP stream, use `--skip-rtsp-wait` to
 start Camera Hub without the extra probe step.

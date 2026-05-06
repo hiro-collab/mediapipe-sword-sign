@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, urlencode, urlsplit
 
 
 DEFAULT_MEDIAMTX_PATH = Path(r"C:\Tools\mediamtx_v1.18.1_windows_amd64\mediamtx.exe")
@@ -130,10 +131,32 @@ class StackSupervisor:
                 critical=False,
             )
 
-        if not self.args.no_browser:
-            open_browser_viewer(self.repo_root / "apps" / "browser_camera_hub_viewer.html")
+        media_url = mediamtx_webrtc_url(self.args.rtsp_url)
+        ws_url = f"ws://{connect_host(self.args.hub_host)}:{self.args.hub_port}"
+        viewer_url = browser_monitor_url(
+            self.repo_root / "apps" / "browser_camera_hub_viewer.html",
+            media_url=media_url,
+            ws_url=ws_url,
+        )
 
         print()
+        print("Camera Hub stack routes:")
+        print(f"  Camera publish: FFmpeg -> MediaMTX RTSP {self.args.rtsp_url}")
+        print(f"  Browser Monitor video: {media_url}")
+        print(f"  Camera Hub input: {self.args.rtsp_url}")
+        print(f"  Camera Hub topics: {ws_url}")
+        print("  Browser Monitor GUI: MediaMTX video + Camera Hub topics")
+        if self.args.publish_jpeg_every <= 0:
+            print("  Python JPEG image topic: disabled (normal MediaMTX mode)")
+        else:
+            print(
+                "  Python JPEG image topic: enabled for debug "
+                f"every {self.args.publish_jpeg_every:.3f}s"
+            )
+
+        if not self.args.no_browser:
+            open_browser_viewer(viewer_url)
+
         print("Camera Hub stack is running.")
         print(f"Logs: {self.log_dir}")
         print("Stop: press Ctrl+C in this terminal.")
@@ -834,6 +857,31 @@ def connect_host(bind_host: str) -> str:
     return bind_host
 
 
+def mediamtx_webrtc_url(rtsp_url: str) -> str:
+    parsed = urlsplit(rtsp_url)
+    host = parsed.hostname or "127.0.0.1"
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    path = parsed.path.lstrip("/") or "cam0"
+    return (
+        f"http://{host}:8889/{quote(path, safe='/')}"
+        "?controls=false&muted=true&autoplay=true"
+    )
+
+
+def browser_monitor_url(viewer_path: Path, *, media_url: str, ws_url: str) -> str:
+    query = urlencode(
+        {
+            "mediaUrl": media_url,
+            "wsUrl": ws_url,
+            "target": "sword_sign",
+        }
+    )
+    return f"{viewer_path.resolve().as_uri()}?{query}"
+
+
 def build_ffprobe_args(ffprobe: str, rtsp_url: str) -> list[str]:
     return [
         ffprobe,
@@ -972,12 +1020,12 @@ def kill_pid_tree(pid: int) -> None:
             pass
 
 
-def open_browser_viewer(path: Path) -> None:
+def open_browser_viewer(url: str) -> None:
     if os.name == "nt":
-        os.startfile(path)  # type: ignore[attr-defined]
+        os.startfile(url)  # type: ignore[attr-defined]
         return
     opener = "open" if sys.platform == "darwin" else "xdg-open"
-    subprocess.Popen([opener, str(path)])
+    subprocess.Popen([opener, url])
 
 
 def quote_for_log(value: str) -> str:

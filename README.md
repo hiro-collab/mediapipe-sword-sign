@@ -86,7 +86,10 @@ print(state.to_json())
 6. Camera Hub
    `uv run python apps/serve_camera_hub.py`
 
-7. Camera Hub GUI
+7. Camera Hub Browser Monitor GUI
+   `Start-Process .\apps\browser_camera_hub_viewer.html`
+
+8. Camera Hub Python GUI
    `uv run python apps/camera_hub_gui.py`
 
 ## Security Notes
@@ -276,7 +279,7 @@ uv run python apps/serve_camera_hub.py --host 127.0.0.1 --port 8765
 
 Camera Hub内部では、カメラ取り込み、gesture推論、status/image配信を分けて動かします。
 MediaPipe推論が重い環境でも、画像topicは最新フレームを別周期で配信できます。
-ブラウザGUIを実装・統合する場合は、topic形式、バイナリ画像topic、5-6クライアント時の目安を
+ブラウザGUIを実装・統合する場合は、GUIの役割分担、topic形式、5-6クライアント時の目安を
 [Browser GUI Integration Guide](docs/browser_gui_integration.md) にまとめています。
 複数カメラや5-6以上のブラウザ配信を見据える場合は、映像配信をMediaMTXへ逃がす構成を
 [MediaMTX Integration Guide](docs/mediamtx_integration.md) にまとめています。
@@ -287,15 +290,42 @@ MediaPipe推論が重い環境でも、画像topicは最新フレームを別周
 - `/camera/status`: カメラFPS、選択camera index、processor状態を配信します。
 - `/camera/color/image_raw/compressed`: `--publish-jpeg-every` を指定した場合だけJPEG frameを配信します。
 
-Camera Hub経由で映像と判定状態を表示する場合は、hub側でJPEG topicも有効にしてからGUIを起動します。
-GUIはカメラを直接開かず、WebSocket topicを購読します。画像topicは既定でバイナリ転送です。
+### Camera Hub GUIの位置づけ
+
+通常のGUIは `apps/browser_camera_hub_viewer.html` です。
+このBrowser Monitorは **MediaMTXの映像** と **Camera HubのWebSocket topic** を同時に見ます。
+GUIはカメラを直接開かず、Camera Hubも通常はUSBカメラ番号 `0` を直接読みません。
+MediaMTX構成では以下の流れに揃えてください。
+
+```text
+Camera / FFmpeg publish
+  -> MediaMTX / cam0
+      -> Browser Monitor video: http://127.0.0.1:8889/cam0
+      -> Camera Hub input: rtsp://127.0.0.1:8554/cam0
+Camera Hub
+  -> Browser Monitor state: ws://127.0.0.1:8765
+```
+
+統合起動する場合は、このリポジトリでは次を使います。
+
+```powershell
+scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
+```
+
+このスクリプトはMediaMTX、FFmpeg publish、Camera Hub、Browser Monitorをまとめて起動します。
+もし下流アプリ側に `start-home-control-stack` のような起動スクリプトがある場合も、同じ役割分担にしてください。
+Browser Monitorだけを `http://127.0.0.1:8889/cam0` へ向けても、MediaMTXとFFmpeg publishが起動していなければ映像は出ません。
+
+`apps/camera_hub_gui.py` はPythonデバッグGUIです。
+Camera HubのWebSocket topicを購読しますが、`--publish-jpeg-every 0` の通常MediaMTX構成では映像プレビューは出ません。
+Python GUIにも映像を出したい検証時だけ、hub側でJPEG topicを有効にします。
 
 ```bash
 uv run python apps/serve_camera_hub.py --host 127.0.0.1 --port 8765 --publish-jpeg-every 0.05
 uv run python apps/camera_hub_gui.py
 ```
 
-JSON/base64で画像topicを確認したい場合だけ、hub側に `--image-transport json` を付けます。
+JSON/base64でJPEG topicを確認したい場合だけ、hub側に `--image-transport json` を付けます。
 gesture推論のCPU負荷を抑えたい場合は `--gesture-every 0.1` のように推論周期を指定できます。
 さらに軽くしたい場合は `--gesture-model-complexity 0` でMediaPipe Handsを軽量モデルにできます。
 
@@ -800,10 +830,22 @@ uv run python apps/serve_camera_hub.py `
 
 複数terminalを開かずに、MediaMTX、FFmpeg publish、Python Camera Hub、ブラウザdebug viewerを
 1つのterminalからまとめて起動できます。
+このリポジトリでの標準GUI起動はこのバッチです。
 
 ```powershell
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 ```
+
+起動時にterminalへ以下の対応関係を表示します。
+
+- `Browser Monitor video`: Browser Monitorが見るMediaMTX WebRTC URL
+- `Camera Hub input`: Camera Hubが推論に使うRTSP URL
+- `Camera Hub topics`: gesture/status/landmarksを購読するWebSocket URL
+
+ブラウザdebug viewerはこれらをURL queryで受け取って開くため、portやcamera pathを変えた場合も既定値に引きずられません。
+Home Control側の起動スクリプトを別に作る場合も、まずMediaMTXとFFmpeg publishを起動し、
+Camera Hubは `--camera-source rtsp://127.0.0.1:8554/cam0` を読む構成にしてください。
+MediaMTXがいない状態でBrowser Monitorだけ開いても、映像paneは表示できません。
 
 前回のMediaMTX / Camera Hub、またはstack用portの利用が残っている可能性がある場合は、起動前チェックで検出します。
 検出時は通常は起動を止めます。自動で残存プロセスを止めてから起動する場合:
