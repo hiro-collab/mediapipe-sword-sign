@@ -56,6 +56,9 @@ scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-stop-existing
 ```
 
+`--force-stop-existing` は Camera Hub stack に属する process または stack port の占有だけを
+停止対象にします。無関係な FFmpeg や Python process を executable 名だけで止める挙動へ広げないでください。
+
 ログは `.runtime\camera-hub-stack\logs` に保存されます。終了は起動した terminal で `Ctrl+C` です。
 
 ## Manual Stack

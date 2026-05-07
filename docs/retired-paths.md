@@ -36,6 +36,10 @@ uv run python apps/serve_camera_hub.py --publish-jpeg-every 0.05
 
 For browser video, use MediaMTX WebRTC/HLS instead.
 
+`JPEG Debug Preview` is a useful label for this diagnostic mode, but it is not a
+product video path and should not appear in startup docs as the normal way to view
+camera video.
+
 ## OpenCV RTSP Fallback
 
 `--camera-backend ffmpeg` uses OpenCV's FFmpeg-backed `VideoCapture`.

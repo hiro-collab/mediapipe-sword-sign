@@ -27,9 +27,22 @@ It is not a change log and does not describe experiment history.
 - Browser video must come from MediaMTX WebRTC/HLS in the normal stack.
 - Camera Hub must read MediaMTX RTSP through `--camera-backend ffmpeg-pipe` for low-latency overlay alignment.
 - Python JPEG topic must stay disabled with `--publish-jpeg-every 0` unless testing Python image transport.
+- JPEG Debug Preview is a diagnostic view for Python image transport. Do not
+  promote it to the normal browser video route.
 - WebSocket topics must use the envelope described in [Integration Contract](integration-contract.md).
 - Non-local WebSocket exposure requires token and exact allowed origin settings.
 - Multiple cameras use distinct MediaMTX paths and distinct Camera Hub ports unless a separate multi-camera service is introduced by the integrator.
+
+## Process Cleanup Boundary
+
+`scripts/start_camera_hub_stack.bat` and `scripts/camera_hub_stack.py` may stop
+only the processes that belong to the local Camera Hub stack or occupy the stack
+ports. They must not broaden cleanup to arbitrary `ffmpeg`, Python, browser, or
+MediaMTX processes by executable name alone.
+
+If a downstream Home Control stack keeps a process manifest, that manifest should
+preserve this narrow stop-target rule: exact stack processes, exact ports, and
+explicit ownership over convenience cleanup.
 
 ## Artifacts Outside The Contract
 
