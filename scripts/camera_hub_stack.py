@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import math
 import os
 import re
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import urlopen
@@ -27,6 +29,21 @@ MEDIAMTX_PORTS = (8554, 8888, 8889)
 STACK_PROCESS_PATTERN = (
     "serve_camera_hub|serve_browser_monitor|camera_hub_stack|mediamtx"
 )
+CAMERA_STATUS_TOPIC = "/camera/status"
+SWORD_SIGN_STATE_TOPIC = "/vision/sword_sign/state"
+REQUIRED_READY_TOPICS = frozenset({CAMERA_STATUS_TOPIC, SWORD_SIGN_STATE_TOPIC})
+EXTERNAL_PROCESS_DENYLIST = {
+    "chrome",
+    "msedge",
+    "firefox",
+    "brave",
+    "brave-browser",
+    "opera",
+    "vivaldi",
+    "updater",
+    "googleupdate",
+    "microsoftedgeupdate",
+}
 URL_CREDENTIAL_RE = re.compile(
     r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/\s\"'@]+@)"
 )
@@ -37,10 +54,23 @@ class ManagedProcess:
     name: str
     process: subprocess.Popen[str]
     log_file: Path
+    started_at: str
     critical: bool = True
 
     def is_running(self) -> bool:
         return self.process.poll() is None
+
+
+def process_manifest_path() -> Path | None:
+    state_dir = os.environ.get("HOME_CONTROL_STACK_STATE_DIR")
+    if not state_dir:
+        return None
+    return (
+        Path(state_dir)
+        / "modules"
+        / "mediapipe_camera_hub_stack"
+        / "processes.json"
+    )
 
 
 class StackSupervisor:
@@ -49,7 +79,11 @@ class StackSupervisor:
         self.repo_root = Path(__file__).resolve().parents[1]
         self.log_dir = (self.repo_root / args.log_dir).resolve()
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.process_manifest_path = process_manifest_path()
         self.processes: list[ManagedProcess] = []
+        self.ready = False
+        self.ready_at = ""
+        self.ready_detail = "starting"
         self._stopping = False
         self._lock = threading.Lock()
 
@@ -120,12 +154,16 @@ class StackSupervisor:
         )
         self._start("camera-hub", hub_args)
         self._sleep_and_check(1.0)
-        wait_for_websocket(
+        observed_topics = wait_for_camera_hub_topics(
             self.args.hub_port,
             connect_host(self.args.hub_host),
             self.args.hub_wait_seconds,
-            service_name="Camera Hub WebSocket",
+            service_name="Camera Hub topics",
         )
+        self.ready = True
+        self.ready_at = datetime.now(timezone.utc).isoformat()
+        self.ready_detail = "received " + ", ".join(sorted(observed_topics))
+        self._write_process_manifest()
 
         if self.args.python_gui:
             self._start(
@@ -207,6 +245,8 @@ class StackSupervisor:
 
         print()
         print("Stopping Camera Hub stack...")
+        self.ready = False
+        self.ready_detail = "stopping"
 
         for managed in reversed(self.processes):
             if managed.is_running() and managed.name.startswith("ffmpeg"):
@@ -233,6 +273,7 @@ class StackSupervisor:
             if managed.is_running():
                 kill_tree(managed.process)
 
+        self._write_process_manifest()
         print("Camera Hub stack stopped.")
 
     def _start(
@@ -271,9 +312,11 @@ class StackSupervisor:
             name=name,
             process=process,
             log_file=log_file,
+            started_at=datetime.now(timezone.utc).isoformat(),
             critical=critical,
         )
         self.processes.append(managed)
+        self._write_process_manifest()
         thread = threading.Thread(
             target=stream_output,
             args=(managed, log_handle),
@@ -301,6 +344,7 @@ class StackSupervisor:
                         f"{managed.name} exited with code {managed.process.returncode}. "
                         f"Stopping the rest of the stack."
                     )
+                    self._write_process_manifest()
                     self.stop()
                     return int(managed.process.returncode or 1)
             time.sleep(0.5)
@@ -309,8 +353,53 @@ class StackSupervisor:
     def _wait_until(self, deadline: float) -> None:
         while time.monotonic() < deadline:
             if all(not managed.is_running() for managed in self.processes):
+                self._write_process_manifest()
                 return
             time.sleep(0.1)
+        self._write_process_manifest()
+
+    def _write_process_manifest(self) -> None:
+        if self.process_manifest_path is None:
+            return
+        processes = []
+        for managed in self.processes:
+            processes.append(
+                {
+                    "name": managed.name,
+                    "pid": managed.process.pid,
+                    "critical": managed.critical,
+                    "running": managed.is_running(),
+                    "returncode": managed.process.returncode,
+                    "started_at": managed.started_at,
+                    "log_file": str(managed.log_file),
+                }
+            )
+        payload = {
+            "schema_version": 1,
+            "module": "mediapipe-sword-sign",
+            "service": "mediapipe_camera_hub_stack",
+            "owner_pid": os.getpid(),
+            "ready": self.ready,
+            "ready_at": self.ready_at or None,
+            "ready_detail": self.ready_detail,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "processes": processes,
+        }
+        try:
+            self.process_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.process_manifest_path.with_suffix(
+                self.process_manifest_path.suffix + ".tmp"
+            )
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+            tmp_path.replace(self.process_manifest_path)
+        except OSError as exc:
+            print(
+                f"warning: failed to write process manifest "
+                f"{self.process_manifest_path}: {exc}"
+            )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -620,6 +709,20 @@ def check_existing_stack(
             f"Stop them first, or rerun with --force-stop-existing. Ports checked: {ports_text}"
         )
 
+    denied = [
+        process
+        for process in existing
+        if is_external_process_name(str(process.get("name") or ""))
+    ]
+    if denied:
+        summary = ", ".join(
+            f"pid={process['pid']} name={process.get('name') or ''}" for process in denied
+        )
+        raise RuntimeError(
+            "Refusing to stop external browser/updater process while handling "
+            f"Camera Hub port conflicts: {summary}"
+        )
+
     print("Stopping existing stack processes before startup...")
     for process in existing:
         pid = int(process["pid"])
@@ -688,6 +791,13 @@ def is_process_discovery_helper(process: dict[str, object]) -> bool:
         "Get-CimInstance Win32_Process" in command
         and STACK_PROCESS_PATTERN in command
     )
+
+
+def is_external_process_name(name: str) -> bool:
+    normalized = name.strip().lower()
+    if normalized.endswith(".exe"):
+        normalized = normalized[:-4]
+    return normalized in EXTERNAL_PROCESS_DENYLIST
 
 
 def current_process_family_pids(current_pid: int) -> set[int]:
@@ -942,6 +1052,93 @@ async def probe_websocket_once(url: str) -> None:
 
     async with connect(url):
         return
+
+
+def wait_for_camera_hub_topics(
+    port: int,
+    host: str,
+    wait_seconds: int,
+    *,
+    service_name: str,
+) -> set[str]:
+    url = f"ws://{host}:{port}"
+    print(f"waiting for {service_name}: {url}")
+    deadline = time.monotonic() + wait_seconds
+    last_error = ""
+    while time.monotonic() < deadline:
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            observed = asyncio.run(probe_camera_hub_topics_once(url, remaining))
+            print(f"{service_name} is ready: {', '.join(sorted(observed))}")
+            return observed
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            time.sleep(0.5)
+    raise RuntimeError(
+        f"{service_name} did not become ready on {url}. Last error: {last_error}"
+    )
+
+
+async def probe_camera_hub_topics_once(url: str, wait_seconds: float) -> set[str]:
+    from websockets.asyncio.client import connect
+
+    observed: set[str] = set()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait_seconds
+    async with connect(url) as websocket:
+        while loop.time() < deadline:
+            timeout = max(0.1, min(1.0, deadline - loop.time()))
+            message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+            envelope = parse_topic_envelope(message)
+            topic = ready_topic_from_envelope(envelope)
+            if topic is not None:
+                observed.add(topic)
+            if REQUIRED_READY_TOPICS.issubset(observed):
+                return observed
+    missing = ", ".join(sorted(REQUIRED_READY_TOPICS.difference(observed)))
+    raise RuntimeError(f"missing Camera Hub ready topics: {missing}")
+
+
+def parse_topic_envelope(message: object) -> dict[str, object]:
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="replace")
+    if not isinstance(message, str):
+        raise ValueError("Camera Hub message is not text JSON")
+    parsed = json.loads(message)
+    if not isinstance(parsed, dict):
+        raise ValueError("Camera Hub topic envelope must be an object")
+    return parsed
+
+
+def ready_topic_from_envelope(envelope: dict[str, object]) -> str | None:
+    topic = envelope.get("topic")
+    if topic == CAMERA_STATUS_TOPIC and is_ready_camera_status(envelope):
+        return CAMERA_STATUS_TOPIC
+    if topic == SWORD_SIGN_STATE_TOPIC and is_ready_gesture_state(envelope):
+        return SWORD_SIGN_STATE_TOPIC
+    return None
+
+
+def is_ready_camera_status(envelope: dict[str, object]) -> bool:
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("type") != "camera_status":
+        return False
+    camera = payload.get("camera")
+    if not isinstance(camera, dict):
+        return False
+    return camera.get("opened") is True and camera.get("frame_read_ok") is True
+
+
+def is_ready_gesture_state(envelope: dict[str, object]) -> bool:
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("type") != "gesture_state":
+        return False
+    gestures = payload.get("gestures")
+    return isinstance(gestures, dict) and "sword_sign" in gestures
 
 
 def connect_host(bind_host: str) -> str:

@@ -1,7 +1,7 @@
 # Camera Hub Integration Contract
 
 This document defines the wire contract for browser and downstream integrations.
-Use it instead of README, changelog entries, or archived planning notes.
+README, changelog entries, and archived planning notes should point here when they mention wire behavior.
 
 ## Runtime Route
 

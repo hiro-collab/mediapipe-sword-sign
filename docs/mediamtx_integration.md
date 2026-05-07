@@ -66,6 +66,16 @@ scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-st
 HTML は Camera Hub 本体ではなく、`apps/serve_browser_monitor.py` が静的配信します。
 この server は表示用ファイルを配るだけで、カメラ取得、gesture 推論、映像 fan-out は担当しません。
 
+Home Control Stack 配下で起動された場合は、`HOME_CONTROL_STACK_STATE_DIR` を受け取り、
+次の manifest にこの supervisor が起動した子プロセスだけを記録します。
+
+```text
+<workspace>\.cache\home-control-stack\modules\mediapipe_camera_hub_stack\processes.json
+```
+
+manifest には `mediamtx`、`ffmpeg-cam0`、`camera-hub` などの `pid`、`started_at`、`running`
+を入れます。停止側はこの記録と起動台帳を使い、Chrome など外部アプリや別用途のプロセスを停止対象にしません。
+
 ## Manual Stack
 
 切り分け時は各コマンドを別 terminal で起動します。

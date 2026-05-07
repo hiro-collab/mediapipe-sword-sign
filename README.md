@@ -49,6 +49,10 @@ uv run python apps/serve_camera_hub.py `
 
 MediaMTX と FFmpeg の詳細手順は [MediaMTX Integration](docs/mediamtx_integration.md) を参照してください。
 
+Home Control Stack から起動された場合、この stack script は `HOME_CONTROL_STACK_STATE_DIR` 配下に
+この supervisor が起動した子プロセスだけの manifest を書きます。停止側はその manifest を使い、
+Chrome など別用途のプロセスを停止対象にしません。
+
 ## Topic Surface
 
 Camera Hub の通常購読先は `ws://127.0.0.1:8765` です。

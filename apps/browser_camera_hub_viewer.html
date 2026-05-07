@@ -46,6 +46,7 @@
     }
 
     #mediaFrame,
+    #topicImage,
     #overlay {
       position: absolute;
       inset: 0;
@@ -54,16 +55,34 @@
       border: 0;
     }
 
+    #mediaFrame {
+      z-index: 0;
+    }
+
+    #topicImage {
+      z-index: 1;
+      display: none;
+      object-fit: contain;
+      background: #000;
+    }
+
+    .topic-image-active #topicImage {
+      display: block;
+    }
+
     #overlay {
+      z-index: 2;
       pointer-events: none;
     }
 
-    .mirrored #mediaFrame {
+    .mirrored #mediaFrame,
+    .mirrored #topicImage {
       transform: scaleX(-1);
     }
 
     .status-strip {
       position: absolute;
+      z-index: 3;
       left: 16px;
       right: 16px;
       bottom: 16px;
@@ -269,6 +288,7 @@
     <section class="stage">
       <div id="videoShell" class="video-shell mirrored">
         <iframe id="mediaFrame" title="MediaMTX camera stream" allow="autoplay; fullscreen"></iframe>
+        <img id="topicImage" alt="Camera Hub JPEG frame">
         <canvas id="overlay"></canvas>
         <div class="status-strip">
           <span id="primaryPill" class="pill">primary -</span>
@@ -301,6 +321,7 @@
           <label><input id="mirrorToggle" type="checkbox" checked> Mirror</label>
           <label><input id="landmarkToggle" type="checkbox" checked> Landmarks</label>
           <label><input id="overlayToggle" type="checkbox" checked> Overlay</label>
+          <label><input id="imageTopicToggle" type="checkbox"> JPEG Debug Preview</label>
         </div>
         <button id="connectButton" type="button">Connect</button>
       </div>
@@ -321,6 +342,7 @@
           <dt>Status Age</dt><dd id="statusAge">-</dd>
           <dt>Camera</dt><dd id="camera">-</dd>
           <dt>Capture FPS</dt><dd id="captureFps">-</dd>
+          <dt>Image Topic</dt><dd id="imageTopic">-</dd>
           <dt>Frame Age</dt><dd id="frameAge">-</dd>
           <dt>Read Latency</dt><dd id="readLatency">-</dd>
           <dt>Read Failures</dt><dd id="readFailures">-</dd>
@@ -382,6 +404,9 @@
       lastEnvelope: null,
       reconnectTimer: null,
       manualClose: false,
+      imageObjectUrl: null,
+      imageFrameCount: 0,
+      imageTopicSuppressedLogged: false,
       latencyProbe: {
         videoBySeq: new Map(),
         samples: [],
@@ -407,6 +432,75 @@
 
     function setText(id, value) {
       $(id).textContent = value == null || value === "" ? "-" : String(value);
+    }
+
+    function imageTopicPreviewEnabled() {
+      return $("imageTopicToggle").checked;
+    }
+
+    function clearTopicImage() {
+      $("videoShell").classList.remove("topic-image-active");
+      $("topicImage").removeAttribute("src");
+      if (state.imageObjectUrl) {
+        URL.revokeObjectURL(state.imageObjectUrl);
+        state.imageObjectUrl = null;
+      }
+    }
+
+    function setTopicImage(envelope, jpegBytes) {
+      const payload = envelope.payload || {};
+      const blob = new Blob([jpegBytes], { type: "image/jpeg" });
+      const objectUrl = URL.createObjectURL(blob);
+      const image = $("topicImage");
+      const previousUrl = state.imageObjectUrl;
+      state.imageObjectUrl = objectUrl;
+      image.onload = () => {
+        if (previousUrl) {
+          URL.revokeObjectURL(previousUrl);
+        }
+      };
+      image.src = objectUrl;
+      $("videoShell").classList.add("topic-image-active");
+      state.imageFrameCount += 1;
+      setText("imageTopic", `seq=${envelope.header && envelope.header.seq} / ${payload.byte_length || jpegBytes.byteLength} bytes`);
+      if (state.imageFrameCount === 1) {
+        log("camera image topic active");
+      }
+    }
+
+    function bytesFromBase64(value) {
+      const binary = atob(String(value || ""));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    }
+
+    function parseBinaryTopicMessage(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const magic = "MPSSBIN1";
+      if (bytes.byteLength < magic.length + 4) {
+        throw new Error("binary topic message is too short");
+      }
+      for (let index = 0; index < magic.length; index += 1) {
+        if (bytes[index] !== magic.charCodeAt(index)) {
+          throw new Error("binary topic message has unknown magic");
+        }
+      }
+      const view = new DataView(buffer);
+      const headerLength = view.getUint32(magic.length, false);
+      const headerStart = magic.length + 4;
+      const headerEnd = headerStart + headerLength;
+      if (headerEnd > bytes.byteLength) {
+        throw new Error("binary topic header exceeds message size");
+      }
+      const headerBytes = bytes.slice(headerStart, headerEnd);
+      const envelope = JSON.parse(new TextDecoder("utf-8").decode(headerBytes));
+      return {
+        envelope,
+        data: bytes.slice(headerEnd)
+      };
     }
 
     function allowedUrl(rawValue, protocols, label) {
@@ -688,7 +782,70 @@
       }
     }
 
-    function handleMessage(event) {
+    function applyImage(envelope, data) {
+      const payload = envelope.payload || {};
+      let jpegBytes = data;
+      if (!jpegBytes && payload.data_base64) {
+        jpegBytes = bytesFromBase64(payload.data_base64);
+      }
+      if (!jpegBytes || jpegBytes.byteLength === 0) {
+        setText("error", "image topic had no JPEG bytes");
+        return;
+      }
+      if (!imageTopicPreviewEnabled()) {
+        const seq = envelope.header && envelope.header.seq;
+        const size = payload.byte_length || jpegBytes.byteLength;
+        setText("imageTopic", `received seq=${seq} / ${size} bytes / preview off`);
+        if (!state.imageTopicSuppressedLogged) {
+          log("camera image topic received; JPEG preview is disabled");
+          state.imageTopicSuppressedLogged = true;
+        }
+        return;
+      }
+      setTopicImage(envelope, jpegBytes);
+      applyEnvelopeMeta({
+        ...envelope,
+        payload: {
+          ...payload,
+          data_base64: payload.data_base64 ? "<omitted>" : undefined
+        }
+      });
+    }
+
+    function handleEnvelope(envelope, binaryData) {
+      if (!envelope || typeof envelope !== "object") {
+        return;
+      }
+      if (envelope.topic === "/vision/sword_sign/state") {
+        applyGesture(envelope);
+      } else if (envelope.topic === "/camera/status") {
+        applyStatus(envelope);
+      } else if (envelope.topic === "/camera/color/image_raw/compressed") {
+        applyImage(envelope, binaryData);
+      } else {
+        applyEnvelopeMeta(envelope);
+      }
+    }
+
+    async function handleMessage(event) {
+      if (event.data instanceof ArrayBuffer) {
+        try {
+          const parsed = parseBinaryTopicMessage(event.data);
+          handleEnvelope(parsed.envelope, parsed.data);
+        } catch (error) {
+          setText("error", `bad binary topic: ${error.message}`);
+        }
+        return;
+      }
+      if (event.data instanceof Blob) {
+        try {
+          const parsed = parseBinaryTopicMessage(await event.data.arrayBuffer());
+          handleEnvelope(parsed.envelope, parsed.data);
+        } catch (error) {
+          setText("error", `bad binary topic: ${error.message}`);
+        }
+        return;
+      }
       if (typeof event.data !== "string") {
         return;
       }
@@ -699,13 +856,7 @@
         setText("error", `bad json: ${error.message}`);
         return;
       }
-      if (envelope.topic === "/vision/sword_sign/state") {
-        applyGesture(envelope);
-      } else if (envelope.topic === "/camera/status") {
-        applyStatus(envelope);
-      } else {
-        applyEnvelopeMeta(envelope);
-      }
+      handleEnvelope(envelope, null);
     }
 
     function connect() {
@@ -731,6 +882,7 @@
       let ws;
       try {
         ws = new WebSocket(wsUrl);
+        ws.binaryType = "arraybuffer";
       } catch (error) {
         setText("connection", "Disconnected");
         setText("error", "websocket url rejected");
@@ -851,6 +1003,7 @@
       const wsUrl = params.get("wsUrl");
       const target = params.get("target");
       const mirror = params.get("mirror");
+      const imageTopic = params.get("imageTopic") || params.get("debugImageTopic") || params.get("jpegPreview");
       if (mediaUrl && allowedUrl(mediaUrl, ["http:", "https:", "file:"], "MediaMTX URL")) {
         $("mediaUrl").value = mediaUrl;
       }
@@ -863,12 +1016,20 @@
       if (mirror != null) {
         $("mirrorToggle").checked = !["0", "false", "off", "no"].includes(mirror.toLowerCase());
       }
+      if (imageTopic != null) {
+        $("imageTopicToggle").checked = ["1", "true", "on", "yes"].includes(imageTopic.toLowerCase());
+      }
     }
 
     $("connectButton").addEventListener("click", connect);
     $("mirrorToggle").addEventListener("change", applyMirror);
     $("landmarkToggle").addEventListener("change", drawOverlay);
     $("overlayToggle").addEventListener("change", drawOverlay);
+    $("imageTopicToggle").addEventListener("change", () => {
+      if (!imageTopicPreviewEnabled()) {
+        clearTopicImage();
+      }
+    });
     window.addEventListener("message", handleWindowMessage);
     window.addEventListener("resize", resizeCanvas);
     new ResizeObserver(resizeCanvas).observe($("overlay"));

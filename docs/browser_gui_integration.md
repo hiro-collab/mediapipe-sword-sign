@@ -48,6 +48,7 @@ Browser Monitor が表示する主な情報:
 - event log
 - envelope JSON
 - landmarks overlay
+- JPEG topic received indicator
 
 MediaMTX 標準ページ `http://127.0.0.1:8889/cam0` は映像だけを表示します。
 gesture や landmarks の確認には Browser Monitor を使います。
@@ -55,9 +56,13 @@ gesture や landmarks の確認には Browser Monitor を使います。
 `file://.../apps/browser_camera_hub_viewer.html?...` の直接起動は単体デバッグ用として残しますが、
 統合スタックや Home Control 側の案内では HTTP viewer URL を使ってください。
 
+Camera Hub が `/camera/color/image_raw/compressed` を配信している場合でも、
+Browser Monitor は通常の映像表示を MediaMTX video pane のままにします。
+Python 画像 topic を切り分ける時だけ `JPEG Debug Preview` または `?debugImageTopic=1` を使います。
+
 ## Connection Contract
 
-GUI が実装として守るべき接続仕様は [Integration Contract](integration-contract.md) を正本にします。
+GUI が守るべき接続仕様は [Integration Contract](integration-contract.md) に置きます。
 特に以下を通常経路として扱います。
 
 | Input | URL |

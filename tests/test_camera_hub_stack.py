@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import os
 import sys
 import unittest
 from contextlib import redirect_stderr
@@ -147,6 +148,73 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertFalse(args.force_stop_existing)
         self.assertFalse(args.no_browser)
 
+    def test_process_manifest_path_uses_home_control_state_dir(self):
+        original = os.environ.get("HOME_CONTROL_STACK_STATE_DIR")
+        try:
+            os.environ["HOME_CONTROL_STACK_STATE_DIR"] = "runtime-state"
+
+            path = stack.process_manifest_path()
+        finally:
+            if original is None:
+                os.environ.pop("HOME_CONTROL_STACK_STATE_DIR", None)
+            else:
+                os.environ["HOME_CONTROL_STACK_STATE_DIR"] = original
+
+        self.assertEqual(
+            path,
+            Path("runtime-state")
+            / "modules"
+            / "mediapipe_camera_hub_stack"
+            / "processes.json",
+        )
+
+    def test_ready_topic_requires_live_camera_status_and_gesture_state(self):
+        camera_envelope = {
+            "topic": stack.CAMERA_STATUS_TOPIC,
+            "payload": {
+                "type": "camera_status",
+                "camera": {"opened": True, "frame_read_ok": True},
+            },
+        }
+        gesture_envelope = {
+            "topic": stack.SWORD_SIGN_STATE_TOPIC,
+            "payload": {
+                "type": "gesture_state",
+                "gestures": {
+                    "sword_sign": {"active": False, "confidence": 0.0},
+                },
+            },
+        }
+
+        self.assertEqual(
+            stack.ready_topic_from_envelope(camera_envelope),
+            stack.CAMERA_STATUS_TOPIC,
+        )
+        self.assertEqual(
+            stack.ready_topic_from_envelope(gesture_envelope),
+            stack.SWORD_SIGN_STATE_TOPIC,
+        )
+
+    def test_ready_topic_rejects_port_only_or_incomplete_payloads(self):
+        unread_camera_envelope = {
+            "topic": stack.CAMERA_STATUS_TOPIC,
+            "payload": {
+                "type": "camera_status",
+                "camera": {"opened": True, "frame_read_ok": False},
+            },
+        }
+        missing_sword_envelope = {
+            "topic": stack.SWORD_SIGN_STATE_TOPIC,
+            "payload": {
+                "type": "gesture_state",
+                "gestures": {"victory": {"active": True, "confidence": 1.0}},
+            },
+        }
+
+        self.assertIsNone(stack.ready_topic_from_envelope(unread_camera_envelope))
+        self.assertIsNone(stack.ready_topic_from_envelope(missing_sword_envelope))
+        self.assertIsNone(stack.ready_topic_from_envelope({"topic": "/unrelated"}))
+
     def test_connect_host_maps_wildcard_to_localhost(self):
         self.assertEqual(stack.connect_host("0.0.0.0"), "127.0.0.1")
         self.assertEqual(stack.connect_host("127.0.0.1"), "127.0.0.1")
@@ -252,6 +320,28 @@ class CameraHubStackTests(unittest.TestCase):
             stack.process_details = original_details
 
         self.assertEqual([process["pid"] for process in processes], [99])
+
+    def test_force_stop_refuses_external_browser_process(self):
+        original_find = stack.find_existing_stack_processes
+
+        try:
+            stack.find_existing_stack_processes = lambda ports, current_pid: [
+                {
+                    "pid": 77,
+                    "name": "chrome.exe",
+                    "command": "chrome.exe --type=renderer",
+                    "ports": [8889],
+                }
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "Refusing to stop external"):
+                stack.check_existing_stack(
+                    ports=(8889,),
+                    force_stop=True,
+                    current_pid=10,
+                )
+        finally:
+            stack.find_existing_stack_processes = original_find
 
     def test_stack_process_pattern_does_not_match_generic_ffmpeg(self):
         self.assertNotIn("ffmpeg", stack.STACK_PROCESS_PATTERN)
