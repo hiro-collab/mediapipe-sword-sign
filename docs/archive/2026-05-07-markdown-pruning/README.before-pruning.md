@@ -503,17 +503,17 @@ Camera Hubは低遅延の切り分け用に、`/camera/status` へ診断値もpu
 2. 例として以下へ展開します。
 
 ```powershell
-C:\Tools\mediamtx_v1.18.1_windows_amd64\mediamtx.exe
+<tools>\mediamtx_v1.18.1_windows_amd64\mediamtx.exe
 ```
 
 3. PATHへ追加します。
 
 ```powershell
-$env:Path += ";C:\Tools\mediamtx_v1.18.1_windows_amd64"
+$env:Path += ";<tools>\mediamtx_v1.18.1_windows_amd64"
 ```
 
 恒久的にPATHへ入れる場合は、Windowsの環境変数設定で
-`C:\Tools\mediamtx_v1.18.1_windows_amd64` を追加してください。
+`<tools>\mediamtx_v1.18.1_windows_amd64` を追加してください。
 
 4. バージョンを確認します。
 
@@ -529,14 +529,14 @@ mediamtx --version
 2. 例として以下へ展開します。
 
 ```powershell
-C:\Tools\ffmpeg\bin\ffmpeg.exe
-C:\Tools\ffmpeg\bin\ffprobe.exe
+<tools>\ffmpeg\bin\ffmpeg.exe
+<tools>\ffmpeg\bin\ffprobe.exe
 ```
 
 3. PATHへ追加します。
 
 ```powershell
-$env:Path += ";C:\Tools\ffmpeg\bin"
+$env:Path += ";<tools>\ffmpeg\bin"
 ```
 
 4. バージョンを確認します。
@@ -565,13 +565,13 @@ PythonのCamera HubはRTSP streamを読んでgesture/status topicだけをWebSoc
 MediaMTXのリリースzipを展開し、例として以下に置きます。
 
 ```powershell
-C:\Tools\mediamtx_v1.18.1_windows_amd64\mediamtx.exe
+<tools>\mediamtx_v1.18.1_windows_amd64\mediamtx.exe
 ```
 
 必要ならPATHへ追加します。
 
 ```powershell
-$env:Path += ";C:\Tools\mediamtx_v1.18.1_windows_amd64"
+$env:Path += ";<tools>\mediamtx_v1.18.1_windows_amd64"
 mediamtx --version
 ```
 

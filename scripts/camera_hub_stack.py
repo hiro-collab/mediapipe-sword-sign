@@ -19,9 +19,9 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import urlopen
 
 
-DEFAULT_MEDIAMTX_PATH = Path(r"C:\Tools\mediamtx_v1.18.1_windows_amd64\mediamtx.exe")
-DEFAULT_FFMPEG_PATH = Path(r"C:\Tools\ffmpeg\bin\ffmpeg.exe")
-DEFAULT_FFPROBE_PATH = Path(r"C:\Tools\ffmpeg\bin\ffprobe.exe")
+MEDIAMTX_PATH_ENV = "MEDIAMTX_PATH"
+FFMPEG_PATH_ENV = "FFMPEG_PATH"
+FFPROBE_PATH_ENV = "FFPROBE_PATH"
 DEFAULT_OPENCV_FFMPEG_OPTIONS = (
     "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|reorder_queue_size;0"
 )
@@ -91,10 +91,10 @@ class StackSupervisor:
         mediamtx = resolve_tool(
             "mediamtx",
             self.args.mediamtx_path,
-            [DEFAULT_MEDIAMTX_PATH],
+            env_fallbacks(MEDIAMTX_PATH_ENV),
         )
-        ffmpeg = resolve_tool("ffmpeg", self.args.ffmpeg_path, [DEFAULT_FFMPEG_PATH])
-        ffprobe = resolve_tool("ffprobe", self.args.ffprobe_path, [DEFAULT_FFPROBE_PATH])
+        ffmpeg = resolve_tool("ffmpeg", self.args.ffmpeg_path, env_fallbacks(FFMPEG_PATH_ENV))
+        ffprobe = resolve_tool("ffprobe", self.args.ffprobe_path, env_fallbacks(FFPROBE_PATH_ENV))
         uv = resolve_tool("uv", self.args.uv_path, [])
 
         config_path = (self.repo_root / self.args.mediamtx_config).resolve()
@@ -656,6 +656,13 @@ def stack_ports(args: argparse.Namespace) -> tuple[int, ...]:
     if not args.no_viewer_server:
         ports.add(int(args.viewer_port))
     return tuple(sorted(ports))
+
+
+def env_fallbacks(name: str) -> list[Path]:
+    value = os.environ.get(name, "")
+    if not value:
+        return []
+    return [Path(value)]
 
 
 def resolve_tool(name: str, explicit: str, fallbacks: list[Path]) -> str:
