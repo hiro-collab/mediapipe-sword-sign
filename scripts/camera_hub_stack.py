@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import urlopen
 
 
 DEFAULT_MEDIAMTX_PATH = Path(r"C:\Tools\mediamtx_v1.18.1_windows_amd64\mediamtx.exe")
@@ -22,8 +23,10 @@ DEFAULT_FFPROBE_PATH = Path(r"C:\Tools\ffmpeg\bin\ffprobe.exe")
 DEFAULT_OPENCV_FFMPEG_OPTIONS = (
     "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|reorder_queue_size;0"
 )
-STACK_PORTS = (8554, 8888, 8889, 8765)
-STACK_PROCESS_PATTERN = "serve_camera_hub|camera_hub_stack|mediamtx"
+MEDIAMTX_PORTS = (8554, 8888, 8889)
+STACK_PROCESS_PATTERN = (
+    "serve_camera_hub|serve_browser_monitor|camera_hub_stack|mediamtx"
+)
 URL_CREDENTIAL_RE = re.compile(
     r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/\s\"'@]+@)"
 )
@@ -65,7 +68,7 @@ class StackSupervisor:
             raise SystemExit(f"MediaMTX config not found: {config_path}")
 
         check_existing_stack(
-            ports=STACK_PORTS,
+            ports=stack_ports(self.args),
             force_stop=self.args.force_stop_existing,
             current_pid=os.getpid(),
         )
@@ -133,8 +136,37 @@ class StackSupervisor:
 
         media_url = mediamtx_webrtc_url(self.args.rtsp_url)
         ws_url = f"ws://{connect_host(self.args.hub_host)}:{self.args.hub_port}"
+        if self.args.no_viewer_server:
+            viewer_base_url = (
+                self.repo_root / "apps" / "browser_camera_hub_viewer.html"
+            ).resolve().as_uri()
+            viewer_health_url = None
+        else:
+            viewer_args = build_viewer_server_args(
+                uv=uv,
+                host=self.args.viewer_host,
+                port=self.args.viewer_port,
+                viewer_path=self.repo_root / "apps" / "browser_camera_hub_viewer.html",
+                allow_remote=self.args.viewer_allow_remote,
+            )
+            self._start("browser-monitor", viewer_args)
+            self._sleep_and_check(0.5)
+            viewer_health_url = viewer_server_health_url(
+                self.args.viewer_host,
+                self.args.viewer_port,
+            )
+            wait_for_http(
+                viewer_health_url,
+                self.args.viewer_wait_seconds,
+                service_name="Browser Monitor HTTP",
+            )
+            viewer_base_url = viewer_server_page_url(
+                self.args.viewer_host,
+                self.args.viewer_port,
+            )
+
         viewer_url = browser_monitor_url(
-            self.repo_root / "apps" / "browser_camera_hub_viewer.html",
+            viewer_base_url,
             media_url=media_url,
             ws_url=ws_url,
         )
@@ -145,7 +177,11 @@ class StackSupervisor:
         print(f"  Browser Monitor video: {media_url}")
         print(f"  Camera Hub input: {self.args.rtsp_url}")
         print(f"  Camera Hub topics: {ws_url}")
-        print("  Browser Monitor GUI: MediaMTX video + Camera Hub topics")
+        if viewer_health_url is not None:
+            print(f"  Browser Monitor HTTP: {viewer_base_url}")
+        else:
+            print(f"  Browser Monitor file fallback: {viewer_base_url}")
+        print(f"  Browser Monitor GUI: {viewer_url}")
         if self.args.publish_jpeg_every <= 0:
             print("  Python JPEG image topic: disabled (normal MediaMTX mode)")
         else:
@@ -327,6 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uv-path", default="")
     parser.add_argument("--wait-seconds", type=parse_positive_int, default=20)
     parser.add_argument("--hub-wait-seconds", type=parse_positive_int, default=20)
+    parser.add_argument("--viewer-host", default="127.0.0.1")
+    parser.add_argument("--viewer-port", type=parse_port, default=8770)
+    parser.add_argument("--viewer-wait-seconds", type=parse_positive_int, default=10)
+    parser.add_argument("--viewer-allow-remote", action="store_true")
+    parser.add_argument("--no-viewer-server", action="store_true")
     parser.add_argument("--graceful-timeout", type=parse_positive_float, default=8.0)
     parser.add_argument("--skip-rtsp-wait", action="store_true")
     parser.add_argument("--force-stop-existing", action="store_true")
@@ -493,6 +534,39 @@ def build_hub_args(
         str(max_clients),
         "--publish-landmarks",
     ]
+
+
+def build_viewer_server_args(
+    *,
+    uv: str,
+    host: str,
+    port: int,
+    viewer_path: Path,
+    allow_remote: bool,
+) -> list[str]:
+    args = [
+        uv,
+        "run",
+        "python",
+        "apps/serve_browser_monitor.py",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--viewer-path",
+        str(viewer_path),
+    ]
+    if allow_remote:
+        args.append("--allow-remote")
+    return args
+
+
+def stack_ports(args: argparse.Namespace) -> tuple[int, ...]:
+    ports = set(MEDIAMTX_PORTS)
+    ports.add(int(args.hub_port))
+    if not args.no_viewer_server:
+        ports.add(int(args.viewer_port))
+    return tuple(sorted(ports))
 
 
 def resolve_tool(name: str, explicit: str, fallbacks: list[Path]) -> str:
@@ -844,6 +918,25 @@ def wait_for_websocket(
     )
 
 
+def wait_for_http(url: str, wait_seconds: int, *, service_name: str) -> None:
+    print(f"waiting for {service_name}: {url}")
+    deadline = time.monotonic() + wait_seconds
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(url, timeout=1.0) as response:
+                if 200 <= response.status < 300:
+                    print(f"{service_name} is ready.")
+                    return
+                last_error = f"HTTP {response.status}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            time.sleep(0.25)
+    raise RuntimeError(
+        f"{service_name} did not become ready on {url}. Last error: {last_error}"
+    )
+
+
 async def probe_websocket_once(url: str) -> None:
     from websockets.asyncio.client import connect
 
@@ -855,6 +948,13 @@ def connect_host(bind_host: str) -> str:
     if bind_host in {"0.0.0.0", "::"}:
         return "127.0.0.1"
     return bind_host
+
+
+def http_host(bind_host: str) -> str:
+    host = connect_host(bind_host)
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
 
 
 def mediamtx_webrtc_url(rtsp_url: str) -> str:
@@ -871,7 +971,15 @@ def mediamtx_webrtc_url(rtsp_url: str) -> str:
     )
 
 
-def browser_monitor_url(viewer_path: Path, *, media_url: str, ws_url: str) -> str:
+def viewer_server_page_url(host: str, port: int) -> str:
+    return f"http://{http_host(host)}:{port}/browser_camera_hub_viewer.html"
+
+
+def viewer_server_health_url(host: str, port: int) -> str:
+    return f"http://{http_host(host)}:{port}/healthz"
+
+
+def browser_monitor_url(viewer_base_url: str, *, media_url: str, ws_url: str) -> str:
     query = urlencode(
         {
             "mediaUrl": media_url,
@@ -879,7 +987,8 @@ def browser_monitor_url(viewer_path: Path, *, media_url: str, ws_url: str) -> st
             "target": "sword_sign",
         }
     )
-    return f"{viewer_path.resolve().as_uri()}?{query}"
+    separator = "&" if "?" in viewer_base_url else "?"
+    return f"{viewer_base_url}{separator}{query}"
 
 
 def build_ffprobe_args(ffprobe: str, rtsp_url: str) -> list[str]:

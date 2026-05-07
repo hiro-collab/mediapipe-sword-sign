@@ -42,13 +42,14 @@ scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 - MediaMTX
 - FFmpeg publish to `rtsp://127.0.0.1:8554/cam0`
 - Camera Hub with `--camera-backend ffmpeg-pipe`
-- Browser Monitor
+- Browser Monitor static viewer server on `http://127.0.0.1:8770`
 
 起動時に以下の URL が terminal に表示されます。
 
 - `Browser Monitor video`
 - `Camera Hub input`
 - `Camera Hub topics`
+- `Browser Monitor HTTP`
 
 前回の MediaMTX / Camera Hub / stack port が残っている場合:
 
@@ -60,6 +61,10 @@ scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-st
 停止対象にします。無関係な FFmpeg や Python process を executable 名だけで止める挙動へ広げないでください。
 
 ログは `.runtime\camera-hub-stack\logs` に保存されます。終了は起動した terminal で `Ctrl+C` です。
+
+統合スタックでは Browser Monitor を `file://` ではなく HTTP で開きます。
+HTML は Camera Hub 本体ではなく、`apps/serve_browser_monitor.py` が静的配信します。
+この server は表示用ファイルを配るだけで、カメラ取得、gesture 推論、映像 fan-out は担当しません。
 
 ## Manual Stack
 
@@ -125,6 +130,24 @@ uv run python apps/serve_camera_hub.py `
   --release-grace-seconds 0.03 `
   --publish-landmarks
 ```
+
+7. Browser Monitor を HTTP で配信:
+
+```powershell
+uv run python apps/serve_browser_monitor.py --host 127.0.0.1 --port 8770
+```
+
+8. Browser Monitor を開く:
+
+```text
+http://127.0.0.1:8770/browser_camera_hub_viewer.html?mediaUrl=http%3A%2F%2F127.0.0.1%3A8889%2Fcam0%3Fcontrols%3Dfalse%26muted%3Dtrue%26autoplay%3Dtrue&wsUrl=ws%3A%2F%2F127.0.0.1%3A8765&target=sword_sign
+```
+
+Query parameter の意味:
+
+- `mediaUrl`: Browser Monitor が iframe で見る MediaMTX WebRTC/HLS URL。
+- `wsUrl`: Camera Hub topic WebSocket URL。
+- `target`: UI で強調表示する gesture 名。
 
 `ffmpeg-pipe` は FFmpeg subprocess から raw BGR frame を受け取る backend です。
 OpenCV RTSP reader の内部 buffering で landmarks が映像より遅れる場合を避けるために使います。

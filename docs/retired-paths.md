@@ -42,6 +42,21 @@ For browser video, use MediaMTX WebRTC/HLS instead.
 product video path and should not appear in startup docs as the normal way to view
 camera video.
 
+## Direct `file://` Browser Monitor
+
+Opening `apps/browser_camera_hub_viewer.html` directly as a `file://` URL is
+retained for single-file debugging.
+
+Normal integrated stacks should start `apps/serve_browser_monitor.py` and open:
+
+```text
+http://127.0.0.1:8770/browser_camera_hub_viewer.html?mediaUrl=...&wsUrl=...
+```
+
+The query parameters are the same as the direct file URL. The HTTP viewer server
+only serves static HTML; it does not own camera capture, inference, or video
+distribution.
+
 ## OpenCV RTSP Fallback
 
 `--camera-backend ffmpeg` uses OpenCV's FFmpeg-backed `VideoCapture`.

@@ -6,6 +6,7 @@
 - Added `gesture_state_payload()` helpers with schema version, sequence, and stable hold state.
 - Added `apps/serve_camera_hub.py` to own one camera input and publish `/vision/sword_sign/state` plus `/camera/status`.
 - Added `apps/camera_hub_gui.py` and `apps/browser_camera_hub_viewer.html` for local monitoring.
+- Added `apps/serve_browser_monitor.py` so the Browser Monitor can be served as localhost HTTP instead of only `file://`.
 - Added MediaMTX stack startup so video is handled by MediaMTX while Camera Hub publishes lightweight topics.
 - Hardened WebSocket and browser-viewer boundaries: exact origins, token normalization, message/queue limits, query-token flood resistance, URL protocol checks, and redacted RTSP credentials in stack logs.
 - Kept `room_light` and Home Control action mapping outside this generic gesture module.

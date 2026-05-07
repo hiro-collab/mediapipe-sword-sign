@@ -141,6 +141,9 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertEqual(args.camera_open_timeout_ms, 5000)
         self.assertEqual(args.camera_read_timeout_ms, 3000)
         self.assertEqual(args.max_clients, 8)
+        self.assertEqual(args.viewer_host, "127.0.0.1")
+        self.assertEqual(args.viewer_port, 8770)
+        self.assertFalse(args.no_viewer_server)
         self.assertFalse(args.force_stop_existing)
         self.assertFalse(args.no_browser)
 
@@ -158,14 +161,50 @@ class CameraHubStackTests(unittest.TestCase):
 
     def test_browser_monitor_url_passes_media_and_websocket_urls(self):
         url = stack.browser_monitor_url(
-            Path("apps/browser_camera_hub_viewer.html"),
+            "http://127.0.0.1:8770/browser_camera_hub_viewer.html",
             media_url="http://127.0.0.1:8889/cam0?controls=false",
             ws_url="ws://127.0.0.1:8765",
         )
 
-        self.assertIn("browser_camera_hub_viewer.html?", url)
+        self.assertIn(
+            "http://127.0.0.1:8770/browser_camera_hub_viewer.html?",
+            url,
+        )
         self.assertIn("mediaUrl=http%3A%2F%2F127.0.0.1%3A8889%2Fcam0", url)
         self.assertIn("wsUrl=ws%3A%2F%2F127.0.0.1%3A8765", url)
+
+    def test_viewer_server_helpers_build_http_routes(self):
+        self.assertEqual(
+            stack.viewer_server_page_url("127.0.0.1", 8770),
+            "http://127.0.0.1:8770/browser_camera_hub_viewer.html",
+        )
+        self.assertEqual(
+            stack.viewer_server_health_url("0.0.0.0", 8770),
+            "http://127.0.0.1:8770/healthz",
+        )
+
+    def test_build_viewer_server_args_uses_separate_static_server(self):
+        args = stack.build_viewer_server_args(
+            uv="uv",
+            host="127.0.0.1",
+            port=8770,
+            viewer_path=Path("apps/browser_camera_hub_viewer.html"),
+            allow_remote=False,
+        )
+
+        self.assertEqual(
+            args[0:4],
+            ["uv", "run", "python", "apps/serve_browser_monitor.py"],
+        )
+        self.assertIn("--viewer-path", args)
+        self.assertNotIn("--allow-remote", args)
+
+    def test_stack_ports_include_viewer_server_by_default(self):
+        args = stack.build_parser().parse_args([])
+
+        self.assertIn(8770, stack.stack_ports(args))
+        args.no_viewer_server = True
+        self.assertNotIn(8770, stack.stack_ports(args))
 
     def test_process_discovery_helper_is_ignored(self):
         process = {
@@ -173,7 +212,7 @@ class CameraHubStackTests(unittest.TestCase):
             "command": (
                 "powershell -NoProfile -Command "
                 "\"Get-CimInstance Win32_Process | Where-Object { "
-                "$_.CommandLine -match 'serve_camera_hub|camera_hub_stack|mediamtx' }\""
+                f"$_.CommandLine -match '{stack.STACK_PROCESS_PATTERN}' }}\""
             ),
         }
 
@@ -190,7 +229,14 @@ class CameraHubStackTests(unittest.TestCase):
             stack.listen_port_owners = lambda ports: {11: {8765}, 99: {8554}}
             stack.list_matching_processes = lambda: [
                 {"pid": 12, "name": "uv.exe", "command": "camera_hub_stack.py"},
-                {"pid": 55, "name": "powershell.exe", "command": "Get-CimInstance Win32_Process serve_camera_hub|camera_hub_stack|mediamtx"},
+                {
+                    "pid": 55,
+                    "name": "powershell.exe",
+                    "command": (
+                        "Get-CimInstance Win32_Process "
+                        f"{stack.STACK_PROCESS_PATTERN}"
+                    ),
+                },
                 {"pid": 99, "name": "mediamtx.exe", "command": "mediamtx config.yml"},
             ]
             stack.process_details = lambda pids: {}

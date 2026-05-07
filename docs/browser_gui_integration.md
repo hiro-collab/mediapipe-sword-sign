@@ -19,12 +19,20 @@ Camera Hub WebSocket -> gesture/status/landmarks overlay
 ## Browser Monitor
 
 このリポジトリのローカル確認 UI は `apps/browser_camera_hub_viewer.html` です。
+統合スタックでは file URL ではなく、静的 viewer server から HTTP で開きます。
 
 ```powershell
-Start-Process .\apps\browser_camera_hub_viewer.html
+uv run python apps/serve_browser_monitor.py
 ```
 
-統合起動では、次のコマンドが MediaMTX URL と Camera Hub WebSocket URL を query parameter で渡して開きます。
+既定の URL:
+
+```text
+http://127.0.0.1:8770/browser_camera_hub_viewer.html
+```
+
+統合起動では、次のコマンドが viewer server を起動し、MediaMTX URL と Camera Hub WebSocket URL を
+query parameter で渡して開きます。
 
 ```powershell
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
@@ -43,6 +51,9 @@ Browser Monitor が表示する主な情報:
 
 MediaMTX 標準ページ `http://127.0.0.1:8889/cam0` は映像だけを表示します。
 gesture や landmarks の確認には Browser Monitor を使います。
+
+`file://.../apps/browser_camera_hub_viewer.html?...` の直接起動は単体デバッグ用として残しますが、
+統合スタックや Home Control 側の案内では HTTP viewer URL を使ってください。
 
 ## Connection Contract
 

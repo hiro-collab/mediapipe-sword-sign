@@ -18,6 +18,7 @@ It is not a change log and does not describe experiment history.
 | --- | --- | --- |
 | `mediapipe_sword_sign/` | feature extraction, model loading, gesture state types, hold tracking, topic helpers | camera device ownership, UI rendering, home automation |
 | `apps/serve_camera_hub.py` | one camera/stream input, MediaPipe inference, status metrics, WebSocket topic publishing | browser video fan-out, MediaMTX lifecycle outside local stack, downstream actions |
+| `apps/serve_browser_monitor.py` | localhost static HTTP delivery of the Browser Monitor HTML | camera capture, gesture inference, video fan-out, service deployment |
 | `scripts/start_camera_hub_stack.bat` | local Windows startup for MediaMTX, FFmpeg publish, Camera Hub, Browser Monitor | service deployment, TLS, production process supervision |
 | Browser Monitor | local visualization of MediaMTX video and Camera Hub topics | camera capture, gesture inference, action execution |
 | MediaMTX config samples | local media routing examples | security policy for public media service exposure |
@@ -26,6 +27,7 @@ It is not a change log and does not describe experiment history.
 
 - Browser video must come from MediaMTX WebRTC/HLS in the normal stack.
 - Camera Hub must read MediaMTX RTSP through `--camera-backend ffmpeg-pipe` for low-latency overlay alignment.
+- Integrated Browser Monitor URLs should use the HTTP viewer server, not a `file://` URL.
 - Python JPEG topic must stay disabled with `--publish-jpeg-every 0` unless testing Python image transport.
 - JPEG Debug Preview is a diagnostic view for Python image transport. Do not
   promote it to the normal browser video route.
