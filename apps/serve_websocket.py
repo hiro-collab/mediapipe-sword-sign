@@ -1,3 +1,10 @@
+"""Compatibility-only WebSocket broadcaster.
+
+Normal integrations should use apps/serve_camera_hub.py, which publishes Camera
+Hub topic envelopes. This script remains for older clients that consume raw
+GestureState JSON directly.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -105,7 +112,12 @@ def safe_runtime_error(exc: Exception) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Broadcast GestureState JSON over WebSocket.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compatibility path: broadcast raw GestureState JSON over WebSocket. "
+            "Use apps/serve_camera_hub.py for Camera Hub topic envelopes."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=parse_port, default=8765)
     parser.add_argument("--camera-index", type=parse_camera_index, default=0)

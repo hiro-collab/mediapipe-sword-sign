@@ -1,3 +1,9 @@
+"""UDP compatibility adapter.
+
+Camera Hub WebSocket topics are the integration path for Camera Hub consumers.
+Keep this adapter for older UDP receivers and diagnostics.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,9 @@
+"""Compatibility-only UDP publisher.
+
+Normal integrations should use Camera Hub WebSocket topics. This script remains
+for older UDP receivers and low-level diagnostics.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -521,7 +527,10 @@ def draw_preview_overlay(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Publish GestureState JSON over UDP.",
+        description=(
+            "Compatibility path: publish GestureState JSON over UDP. "
+            "Use Camera Hub WebSocket topics for normal integrations."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

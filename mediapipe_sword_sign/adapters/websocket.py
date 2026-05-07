@@ -19,6 +19,12 @@ DEFAULT_MAX_QUEUE = 4
 
 
 class WebSocketGestureBroadcaster:
+    """Compatibility broadcaster for raw GestureState JSON.
+
+    Camera Hub integrations should publish topic envelopes through
+    WebSocketTopicBroadcaster instead of this gesture-specific shape.
+    """
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -155,7 +161,7 @@ class WebSocketGestureBroadcaster:
 
 
 class WebSocketTopicBroadcaster(WebSocketGestureBroadcaster):
-    """Generic topic broadcaster; kept separate from the gesture-specific name."""
+    """Camera Hub topic-envelope broadcaster used by the normal integration path."""
 
 
 def _load_serve():

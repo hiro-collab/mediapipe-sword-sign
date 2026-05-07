@@ -11,6 +11,7 @@ If a use case depends on one of these paths, document the reason in the integrat
 ## `apps/publish_udp.py`
 
 UDP publishing is retained for older receivers such as `sword-voice-agent`.
+Status: compatibility-only.
 
 - Sends `gesture_state`, optional status JSON, and optional heartbeat payloads.
 - Remote UDP requires `--allow-remote-udp`.
@@ -22,6 +23,7 @@ Use it only for compatibility with UDP receivers or low-level diagnostics.
 ## `apps/serve_websocket.py`
 
 This script broadcasts gesture JSON without the Camera Hub topic envelope split.
+Status: compatibility-only.
 It is useful for older clients and unit tests around the legacy WebSocket adapter.
 Browser and Home Control integrations should use `apps/serve_camera_hub.py`.
 
