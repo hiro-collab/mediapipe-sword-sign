@@ -920,7 +920,7 @@ MediaMTX構成の手動起動手順です。切り分け時は各コマンドを
 1. 作業ディレクトリへ移動:
 
 ```powershell
-cd C:\Users\kawai\works\media-pipe-sword-sign\mediapipe-sword-sign
+cd <workspace>\mediapipe-sword-sign
 ```
 
 2. MediaMTXを起動:
