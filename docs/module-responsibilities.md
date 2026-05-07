@@ -40,6 +40,10 @@ only the processes that belong to the local Camera Hub stack or occupy the stack
 ports. They must not broaden cleanup to arbitrary `ffmpeg`, Python, browser, or
 MediaMTX processes by executable name alone.
 
+If this stack exposes a process manifest to downstream tooling, the manifest
+should record only child processes started by this supervisor. Discovered
+pre-existing processes are cleanup candidates, not owned manifest entries.
+
 If a downstream Home Control stack keeps a process manifest, that manifest should
 preserve this narrow stop-target rule: exact stack processes, exact ports, and
 explicit ownership over convenience cleanup.
