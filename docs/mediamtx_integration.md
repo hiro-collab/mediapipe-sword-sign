@@ -1,80 +1,82 @@
-# MediaMTX Integration Guide
+# MediaMTX Integration
 
-Use MediaMTX when you need multiple cameras or more than a few browser clients.
-In this architecture, MediaMTX handles video ingest and fan-out, while Python
-keeps responsibility for gesture recognition and topic/status messages.
-
-## Architecture
+MediaMTX は映像の ingest と fan-out を担当します。Camera Hub は MediaMTX の RTSP stream を読み、
+gesture/status/landmarks topic だけを WebSocket で配信します。
 
 ```text
-USB/IP cameras
-  -> FFmpeg / camera protocol
-  -> MediaMTX
-      -> Browser GUI video: WebRTC or HLS
-      -> Python vision workers: RTSP
-  -> Python topic hub
-      -> Browser GUI state: gesture/status WebSocket topics
+USB camera -> FFmpeg publish -> MediaMTX /cam0 -> Browser video
+                                      |
+                                      +-> RTSP -> Camera Hub ffmpeg-pipe -> topics
 ```
 
-The key point is that browser video no longer flows through Python. Python reads
-only the stream it needs for MediaPipe inference.
+## Responsibility Boundary
 
-## Why MediaMTX
+- MediaMTX: WebRTC/HLS/RTSP の映像配信。
+- FFmpeg: Windows USB camera を DirectShow で開き、MediaMTX に publish。
+- Camera Hub: RTSP を `ffmpeg-pipe` で読み、MediaPipe 推論と topic 配信を実行。
+- Browser GUI: MediaMTX の映像と Camera Hub topic を表示。
 
-MediaMTX is a media router/proxy that can publish and read streams with RTSP,
-WebRTC, HLS, RTMP, SRT, and related protocols. It can serve multiple streams at
-separate paths such as `/cam0`, `/cam1`, and `/cam2`.
+Python からブラウザへ JPEG を配る構成は検証用です。複数クライアントや複数カメラの導線では使いません。
 
-For browser viewing, MediaMTX serves WebRTC pages at:
+## Tooling
 
-```text
-http://127.0.0.1:8889/cam0
-```
+確認済みの外部ツール:
 
-For Python/OpenCV inference, the same path can be read over RTSP:
+| Tool | Version | Purpose |
+| --- | --- | --- |
+| MediaMTX | `v1.18.1` Windows amd64 | RTSP/WebRTC/HLS media server |
+| FFmpeg / ffprobe | `2026-04-30-git-cc3ca17127` gyan.dev essentials build | DirectShow capture、H.264 encode、RTSP 確認 |
 
-```text
-rtsp://127.0.0.1:8554/cam0
-```
+Camera Hub の Python 依存だけでは、複数ブラウザへの映像 fan-out を担当しません。
 
-## Windows USB Camera Setup
+## One-Terminal Stack
 
-1. Install MediaMTX and FFmpeg.
-
-Verified tool versions:
-
-- MediaMTX `v1.18.1` Windows amd64
-- FFmpeg `2026-04-30-git-cc3ca17127` gyan.dev essentials build
-
-2. Start MediaMTX with the explicit publisher-path sample config.
+ローカル統合確認は stack script を使います。
 
 ```powershell
-mediamtx configs/mediamtx/mediamtx.publisher.example.yml
+scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 ```
 
-Starting `mediamtx` alone only starts the media server. It does not create
-`/cam0` by itself. A camera stream must be published to MediaMTX, either by an
-FFmpeg process or by `runOnInit` entries in a MediaMTX config file.
-Depending on the active default config, unconfigured paths can also make FFmpeg
-publishing fail with `Server returned 400 Bad Request`. Use
-`configs/mediamtx/mediamtx.publisher.example.yml` for the first smoke test.
+この script は以下を起動します。
 
-3. List DirectShow camera device names:
+- MediaMTX
+- FFmpeg publish to `rtsp://127.0.0.1:8554/cam0`
+- Camera Hub with `--camera-backend ffmpeg-pipe`
+- Browser Monitor
+
+起動時に以下の URL が terminal に表示されます。
+
+- `Browser Monitor video`
+- `Camera Hub input`
+- `Camera Hub topics`
+
+前回の MediaMTX / Camera Hub / stack port が残っている場合:
+
+```powershell
+scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-stop-existing
+```
+
+ログは `.runtime\camera-hub-stack\logs` に保存されます。終了は起動した terminal で `Ctrl+C` です。
+
+## Manual Stack
+
+切り分け時は各コマンドを別 terminal で起動します。
+
+1. MediaMTX を明示 publisher 設定で起動:
+
+```powershell
+mediamtx configs\mediamtx\mediamtx.publisher.example.yml
+```
+
+MediaMTX だけでは `/cam0` stream は作られません。FFmpeg publish が必要です。
+
+2. DirectShow camera 名を確認:
 
 ```powershell
 ffmpeg -list_devices true -f dshow -i dummy
 ```
 
-Example output may include:
-
-```text
-"HD Pro Webcam C920" (video)
-```
-
-## Quick Smoke Test Without A Config File
-
-With MediaMTX already running, publish one camera to `/cam0` from another
-terminal:
+3. `/cam0` へ publish:
 
 ```powershell
 ffmpeg -f dshow `
@@ -89,65 +91,19 @@ ffmpeg -f dshow `
   -f rtsp rtsp://127.0.0.1:8554/cam0
 ```
 
-Then verify the path:
+4. RTSP path を確認:
 
 ```powershell
 ffprobe -rtsp_transport tcp -v error -show_entries stream=codec_type,width,height,avg_frame_rate -of default=noprint_wrappers=1 rtsp://127.0.0.1:8554/cam0
 ```
 
-If this works, the Python worker can read the stream:
-
-```powershell
-uv run python apps/serve_camera_hub.py `
-  --host 127.0.0.1 `
-  --port 8765 `
-  --interval 0 `
-  --camera-source rtsp://127.0.0.1:8554/cam0 `
-  --camera-backend ffmpeg `
-  --frame-id cam0 `
-  --publish-jpeg-every 0 `
-  --gesture-every 0.05 `
-  --gesture-model-complexity 0 `
-  --release-grace-seconds 0.03 `
-  --publish-landmarks
-```
-
-## Persistent MediaMTX Config
-
-For repeated use, copy and edit the sample config:
-
-```powershell
-Copy-Item configs/mediamtx/mediamtx.windows.example.yml mediamtx.yml
-notepad mediamtx.yml
-```
-
-Replace `CAMERA_0_NAME`, `CAMERA_1_NAME`, and so on with the camera names from
-FFmpeg.
-
-Stop any already running plain `mediamtx` process, then start MediaMTX with the
-edited config:
-
-```powershell
-mediamtx mediamtx.yml
-```
-
-Open a browser stream:
+5. Browser video を確認:
 
 ```text
 http://127.0.0.1:8889/cam0
 ```
 
-Verify RTSP before starting Python:
-
-```powershell
-ffprobe -rtsp_transport tcp -v error -show_entries stream=codec_type,width,height,avg_frame_rate -of default=noprint_wrappers=1 rtsp://127.0.0.1:8554/cam0
-```
-
-## Python Gesture Worker From MediaMTX
-
-For each camera that needs gesture recognition, start a Python worker that reads
-the MediaMTX RTSP stream. Keep Python image publishing disabled unless you are
-debugging the Python pipeline.
+6. Camera Hub を RTSP 入力で起動:
 
 ```powershell
 uv run python apps/serve_camera_hub.py `
@@ -161,197 +117,52 @@ uv run python apps/serve_camera_hub.py `
   --camera-fps 30 `
   --frame-id cam0 `
   --publish-jpeg-every 0 `
-  --gesture-every 0.1 `
-  --gesture-model-complexity 0
+  --gesture-every 0.05 `
+  --gesture-model-complexity 0 `
+  --release-grace-seconds 0.03 `
+  --publish-landmarks
 ```
 
-`ffmpeg-pipe` reads raw BGR frames from an FFmpeg subprocess instead of using
-OpenCV's RTSP `VideoCapture`. Prefer it for overlay synchronization because it
-avoids the extra OpenCV RTSP buffering that can make landmarks trail live video.
+`ffmpeg-pipe` は FFmpeg subprocess から raw BGR frame を受け取る backend です。
+OpenCV RTSP reader の内部 buffering で landmarks が映像より遅れる場合を避けるために使います。
 
-If this command waits for about 30 seconds and then reports
-`camera not available: rtsp://127.0.0.1:8554/cam0`, MediaMTX is reachable but
-the `/cam0` stream is not ready. Check:
+## Persistent Config
 
-- MediaMTX is running.
-- FFmpeg is publishing to `rtsp://127.0.0.1:8554/cam0`, or `runOnInit` is
-  configured and running.
-- `ffprobe rtsp://127.0.0.1:8554/cam0` succeeds.
-- The camera name in the FFmpeg command exactly matches the DirectShow device
-  name.
+毎回 FFmpeg コマンドを起動しない場合は、MediaMTX の sample config をコピーして camera 名を編集します。
 
-If you need gesture recognition on multiple cameras today, run one worker per
-camera on separate ports:
+```powershell
+Copy-Item configs\mediamtx\mediamtx.windows.example.yml mediamtx.yml
+notepad mediamtx.yml
+mediamtx mediamtx.yml
+```
+
+`CAMERA_0_NAME` などを `ffmpeg -list_devices` の表示名へ置き換えます。
+一時 publish の確認だけなら `configs\mediamtx\mediamtx.publisher.example.yml` を使います。
+
+## Multiple Cameras
+
+複数 camera で gesture 認識が必要な場合は、camera ごとに MediaMTX path と Camera Hub port を分けます。
 
 ```powershell
 uv run python apps/serve_camera_hub.py --port 8765 --interval 0 --camera-source rtsp://127.0.0.1:8554/cam0 --camera-backend ffmpeg-pipe --camera-width 640 --camera-height 480 --camera-fps 30 --frame-id cam0 --publish-jpeg-every 0 --gesture-every 0.1
 uv run python apps/serve_camera_hub.py --port 8766 --interval 0 --camera-source rtsp://127.0.0.1:8554/cam1 --camera-backend ffmpeg-pipe --camera-width 640 --camera-height 480 --camera-fps 30 --frame-id cam1 --publish-jpeg-every 0 --gesture-every 0.1
 ```
 
-For production, prefer a dedicated multi-camera vision service that publishes
-all camera states through one topic endpoint. The current worker remains useful
-as a simple per-camera building block.
+多数 camera を常用する場合は、複数 worker を束ねる vision service を統合側で設計します。
+この module は per-camera worker と topic 契約を提供します。
 
-## Low-Latency Gesture Feedback
+## Failure Cues
 
-If the browser or Python GUI reacts slowly when the hand leaves the sword sign,
-separate intentional smoothing from stream latency:
+`camera not available: rtsp://127.0.0.1:8554/cam0` の主な原因:
 
-- `Target` is current-frame classification.
-- `Stable` includes hold/release smoothing.
-- `--release-grace-seconds` intentionally delays stable release.
-- The Python GUI shows `Topic Age`; if it grows, the hub is processing old
-  frames.
+- MediaMTX が起動していない。
+- FFmpeg publish が `/cam0` へ到達していない。
+- DirectShow camera 名が一致していない。
+- `ffprobe rtsp://127.0.0.1:8554/cam0` が失敗している。
+- OpenCV RTSP fallback を使っていて buffering または option rejection が起きている。
 
-Low-latency worker example:
-
-```powershell
-uv run python apps/serve_camera_hub.py `
-  --host 127.0.0.1 `
-  --port 8765 `
-  --interval 0 `
-  --camera-source rtsp://127.0.0.1:8554/cam0 `
-  --camera-backend ffmpeg-pipe `
-  --camera-width 640 `
-  --camera-height 480 `
-  --camera-fps 30 `
-  --frame-id cam0 `
-  --publish-jpeg-every 0 `
-  --gesture-every 0.05 `
-  --gesture-model-complexity 0 `
-  --release-grace-seconds 0.03 `
-  --publish-landmarks
-```
-
-If you need to compare against the older OpenCV RTSP reader, start with
-`--camera-backend ffmpeg`. If the local OpenCV build rejects one of the FFmpeg
-options, retry with:
-
-```powershell
---opencv-ffmpeg-capture-options none
-```
-
-## Browser GUI Integration
-
-Browser GUI should use two connections:
-
-- Video: MediaMTX WebRTC/HLS URL, for example `http://127.0.0.1:8889/cam0`
-- State: Python topic WebSocket, for example `ws://127.0.0.1:8765`
-
-Do not treat WebSocket JPEG preview as the normal browser video path. In the
-MediaMTX architecture, WebSocket topics carry gesture/status/landmarks and
-diagnostics; MediaMTX carries video.
-
-The intended local GUI flow is:
-
-```text
-Browser Monitor video pane
-  <- http://127.0.0.1:8889/cam0 from MediaMTX
-Browser Monitor overlay/status pane
-  <- ws://127.0.0.1:8765 from Camera Hub
-Camera Hub processor input
-  <- rtsp://127.0.0.1:8554/cam0 from MediaMTX
-```
-
-If a Home Control startup script opens the Browser Monitor but does not start
-MediaMTX and an FFmpeg publisher, the video pane will be empty. Fix the startup
-script to start or require MediaMTX; do not move normal video delivery back to
-Python WebSocket JPEG frames.
-
-Simple WebRTC iframe:
-
-```html
-<iframe
-  src="http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true"
-  width="640"
-  height="480"
-  scrolling="no">
-</iframe>
-```
-
-For local debugging, this repository also includes a static browser monitor:
-
-```powershell
-Start-Process .\apps\browser_camera_hub_viewer.html
-```
-
-It embeds the MediaMTX viewer and subscribes to the Camera Hub WebSocket. It can
-show mirror mode, current/stable gesture state, all gesture confidence scores,
-topic age, camera status, event log, last envelope JSON, and MediaPipe hand
-landmarks when the hub is started with `--publish-landmarks`.
-
-## One-Terminal Startup
-
-For day-to-day local use on Windows, start the whole stack from one terminal:
-
-```powershell
-scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
-```
-
-If an earlier run may still be alive, let the startup check stop matching
-MediaMTX, Camera Hub, or occupied stack ports first. The supervisor does not
-match arbitrary FFmpeg processes by name:
-
-```powershell
-scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920" --force-stop-existing
-```
-
-This starts MediaMTX, FFmpeg camera publish, the Python Camera Hub, and the
-browser debug viewer. Logs are prefixed in the same terminal and also written to:
-
-```text
-.runtime\camera-hub-stack\logs
-```
-
-Stop the stack with `Ctrl+C` in that terminal. The supervisor first asks FFmpeg
-to quit, then sends an interrupt to MediaMTX and Camera Hub, then falls back to
-terminating any remaining process tree.
-
-The startup script publishes H.264 with a short GOP (`--gop 30` by default) and
-starts Camera Hub with `--hub-camera-backend ffmpeg-pipe` by default. That keeps
-the browser video on MediaMTX while making the Python inference reader avoid
-OpenCV RTSP buffering. Use `--hub-camera-backend ffmpeg` only when comparing
-against the older OpenCV-backed path.
-
-On startup, the supervisor prints the exact route URLs:
-
-- `Browser Monitor video`: MediaMTX WebRTC URL
-- `Camera Hub input`: RTSP URL read by the processor
-- `Camera Hub topics`: WebSocket URL for gesture/status/landmarks
-
-The opened browser monitor receives these URLs as query parameters, so custom
-ports or camera paths are reflected in the GUI instead of relying on defaults.
-
-If `ffprobe` is slow or flaky on a live RTSP stream, use `--skip-rtsp-wait` to
-start Camera Hub without the extra probe step.
-
-For a richer GUI, use MediaMTX's WebRTC JavaScript reader and render into a
-`<video>` element, then subscribe to Python gesture/status topics separately.
-
-## Sizing Guidance
-
-For 5 cameras and 5-6 browser clients:
-
-- Let MediaMTX distribute video.
-- Keep Python JPEG topic disabled: `--publish-jpeg-every 0`.
-- Start with 640x480 streams.
-- Use WebRTC for low latency, HLS when connectivity is easier than latency.
-- Run MediaPipe only on cameras that need gesture recognition.
-- Use `--gesture-every 0.1` to `0.2` to cap inference cost.
-
-Avoid sending every camera as Python JPEG WebSocket frames to every browser.
-That path scales bandwidth and CPU poorly.
-
-## When To Consider LiveKit
-
-MediaMTX is a good first media router for LAN and local dashboard use. Consider
-LiveKit or another WebRTC SFU when:
-
-- remote internet clients are common,
-- many users need adaptive bitrate behavior,
-- rooms, participants, permissions, and WebRTC lifecycle management become core
-  application concerns,
-- you need mobile SDKs or cloud scaling.
+OpenCV RTSP fallback を比較する場合だけ `--camera-backend ffmpeg` を使います。
+OpenCV が option を拒否する場合は `--opencv-ffmpeg-capture-options none` で切り分けます。
 
 ## References
 
