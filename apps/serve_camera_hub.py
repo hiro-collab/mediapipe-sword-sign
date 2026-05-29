@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from math import isfinite
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -49,6 +49,7 @@ CAMERA_BACKEND_FLAGS = {
     "ffmpeg": cv2.CAP_FFMPEG,
     "ffmpeg-pipe": cv2.CAP_FFMPEG,
     "msmf": cv2.CAP_MSMF,
+    "replay-video": 0,
 }
 
 DEFAULT_OPENCV_FFMPEG_CAPTURE_OPTIONS = (
@@ -92,6 +93,16 @@ def parse_camera_source(value: str) -> str:
     if not parsed:
         raise argparse.ArgumentTypeError("--camera-source must not be empty")
     return parsed
+
+
+def parse_replay_video_path(value: str) -> str:
+    parsed = value.strip()
+    if not parsed:
+        raise argparse.ArgumentTypeError("--replay-video must not be empty")
+    path = Path(parsed).expanduser().resolve()
+    if not path.is_file():
+        raise argparse.ArgumentTypeError("--replay-video must be an existing file")
+    return str(path)
 
 
 def parse_camera_backend(value: str) -> str:
@@ -224,6 +235,8 @@ def resolve_auth_token(auth_token_env: str | None) -> str | None:
 
 def safe_runtime_error(exc: Exception) -> str:
     if isinstance(exc, FileNotFoundError):
+        if "replay video not found" in str(exc):
+            return "replay_video_not_found"
         if "executable not found" in str(exc):
             return "executable_not_found"
         return "model_not_found"
@@ -326,19 +339,44 @@ def fourcc_to_text(value: int) -> str:
 
 def redact_camera_source(source: str) -> str:
     parsed = urlsplit(source)
-    if not parsed.scheme or not parsed.netloc:
-        return source
-    if parsed.username is None and parsed.password is None:
-        return source
+    if parsed.scheme and parsed.netloc:
+        if parsed.username is None and parsed.password is None:
+            return source
 
-    host = parsed.hostname or ""
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
-    netloc = f"<redacted>@{host}"
-    return urlunsplit(
-        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        netloc = f"<redacted>@{host}"
+        return urlunsplit(
+            (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+        )
+
+    if looks_like_local_file_source(source):
+        name = local_file_source_name(source)
+        return f"local-file:{name}"
+    return source
+
+
+def local_file_source_name(source: str) -> str:
+    windows_name = PureWindowsPath(source).name
+    if "\\" in source and windows_name:
+        return windows_name
+    return Path(source).name or windows_name or "local-file"
+
+
+def looks_like_local_file_source(source: str) -> bool:
+    text = str(source).strip()
+    if not text:
+        return False
+    path = Path(text)
+    return (
+        path.is_absolute()
+        or "\\" in text
+        or "/" in text
+        or path.suffix.lower()
+        in {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm", ".wmv"}
     )
 
 
@@ -446,6 +484,50 @@ class FfmpegPipeCapture:
         )
 
 
+class VideoReplayCapture:
+    def __init__(self, source: str, *, loop: bool = True) -> None:
+        path = Path(source).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"replay video not found: {path}")
+        self.source = str(path)
+        self.loop = bool(loop)
+        self.cap = cv2.VideoCapture(self.source)
+        self.loop_count = 0
+
+    def isOpened(self) -> bool:
+        return bool(self.cap.isOpened())
+
+    def read(self):
+        success, frame = self.cap.read()
+        if success:
+            return True, frame
+        if not self.loop:
+            return False, None
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        success, frame = self.cap.read()
+        if success:
+            self.loop_count += 1
+        return success, frame
+
+    def get(self, prop_id: int) -> float:
+        return float(self.cap.get(prop_id) or 0.0)
+
+    def set(self, prop_id: int, value: float) -> bool:
+        return bool(self.cap.set(prop_id, value))
+
+    def release(self) -> None:
+        self.cap.release()
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "mode": "replay-video",
+            "loop": self.loop,
+            "loop_count": self.loop_count,
+            "source": redact_camera_source(self.source),
+        }
+
+
 def read_exact(stream, size: int) -> bytes | None:
     chunks = []
     remaining = size
@@ -472,6 +554,7 @@ def open_video_capture(
     source: int | str,
     *,
     backend: str,
+    replay_loop: bool,
     open_timeout_ms: int,
     read_timeout_ms: int,
     ffmpeg_capture_options: str | None,
@@ -480,6 +563,11 @@ def open_video_capture(
     fps: float | None,
     ffmpeg_path: str,
 ):
+    if backend == "replay-video":
+        if not isinstance(source, str):
+            raise ValueError("replay-video backend requires --replay-video")
+        return VideoReplayCapture(source, loop=replay_loop)
+
     if backend == "ffmpeg-pipe":
         if not isinstance(source, str):
             raise ValueError("ffmpeg-pipe backend requires --camera-source")
@@ -566,6 +654,7 @@ class LatestFrameCamera:
         read_timeout_ms: int = 1000,
         ffmpeg_capture_options: str | None = None,
         ffmpeg_path: str = "ffmpeg",
+        replay_loop: bool = True,
     ) -> None:
         self.source = source
         self.camera_index = camera_index
@@ -575,6 +664,7 @@ class LatestFrameCamera:
         self.cap = open_video_capture(
             source,
             backend=backend,
+            replay_loop=replay_loop,
             open_timeout_ms=open_timeout_ms,
             read_timeout_ms=read_timeout_ms,
             ffmpeg_capture_options=ffmpeg_capture_options,
@@ -597,7 +687,7 @@ class LatestFrameCamera:
         self._read_failures = 0
 
     def actual_properties(self) -> dict[str, object]:
-        return {
+        properties = {
             "source": redact_camera_source(str(self.source)),
             "backend": self.backend,
             "ffmpeg_capture_options": self.ffmpeg_capture_options or "",
@@ -606,6 +696,10 @@ class LatestFrameCamera:
             "fps": round(float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0), 3),
             "fourcc": fourcc_to_text(int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)),
         }
+        metadata = getattr(self.cap, "metadata", None)
+        if callable(metadata):
+            properties.update(metadata())
+        return properties
 
     def start(self) -> None:
         if not self.cap.isOpened():
@@ -796,6 +890,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--replay-video",
+        type=parse_replay_video_path,
+        help=(
+            "Developer/test mode: read this local video file instead of the "
+            "real camera and publish normal Camera Hub topics."
+        ),
+    )
+    parser.add_argument(
+        "--replay-loop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Loop --replay-video after EOF so UI/topic checks can keep running.",
+    )
+    parser.add_argument(
+        "--replay-fps",
+        type=parse_camera_fps,
+        help=(
+            "Optional replay pacing hint. When set, it updates the capture FPS "
+            "request and the default read interval should usually be 1/fps."
+        ),
+    )
+    parser.add_argument(
         "--camera-backend",
         type=parse_camera_backend,
         default="auto",
@@ -921,7 +1037,11 @@ async def publish_status_loop(
                     frame_read_ok=snapshot.frame_read_ok,
                     capture=capture_status_properties(camera, snapshot),
                     camera_source=(
-                        args.camera_source if args.camera_source is not None else None
+                        args.replay_video
+                        if args.replay_video is not None
+                        else args.camera_source
+                        if args.camera_source is not None
+                        else None
                     ),
                     processors=processors,
                 ),
@@ -1080,21 +1200,34 @@ async def run(args: argparse.Namespace) -> None:
         allow_remote_unauthenticated=args.allow_remote_unauthenticated,
     )
     camera_source: int | str = (
-        args.camera_source if args.camera_source is not None else args.camera_index
+        args.replay_video
+        if args.replay_video is not None
+        else args.camera_source
+        if args.camera_source is not None
+        else args.camera_index
+    )
+    camera_backend = (
+        "replay-video" if args.replay_video is not None else args.camera_backend
+    )
+    camera_fps = (
+        args.replay_fps
+        if args.replay_video is not None and args.replay_fps is not None
+        else args.camera_fps
     )
     camera = LatestFrameCamera(
         camera_source,
         camera_index=args.camera_index,
         interval=args.interval,
-        backend=args.camera_backend,
+        backend=camera_backend,
         width=args.camera_width,
         height=args.camera_height,
-        fps=args.camera_fps,
+        fps=camera_fps,
         fourcc=args.camera_fourcc,
         open_timeout_ms=args.camera_open_timeout_ms,
         read_timeout_ms=args.camera_read_timeout_ms,
         ffmpeg_capture_options=args.opencv_ffmpeg_capture_options,
         ffmpeg_path=args.ffmpeg_path,
+        replay_loop=args.replay_loop,
     )
     tasks: list[asyncio.Task[None]] = []
     processor_metrics: dict[str, dict[str, object]] = {

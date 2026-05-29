@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-29 - Local Video Replay Test Support
+
+- Added local-only frame extraction helper for sampled debug fixtures and detector manifests.
+- Added Camera Hub `--replay-video` support with looping replay for normal `/camera/status` and `/vision/sword_sign/state` topic checks without the real camera.
+- Kept replay videos, extracted frames, and generated fixture manifests out of Git.
+
 ## 2026-05-07 - Camera Hub Topic Envelope Split
 
 - Added topic envelope helpers in `mediapipe_sword_sign/topics.py` for ROS2-shaped JSON without requiring ROS2.

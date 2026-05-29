@@ -49,6 +49,20 @@ uv run python apps/serve_camera_hub.py `
 
 MediaMTX と FFmpeg の詳細手順は [MediaMTX Integration](docs/mediamtx_integration.md) を参照してください。
 
+ローカル動画を使った replay mode は開発・検証用です。実カメラの前で同じ gesture を繰り返さずに、
+通常の `/camera/status` と `/vision/sword_sign/state` topic を確認できます。
+
+```powershell
+uv run python apps/serve_camera_hub.py `
+  --host 127.0.0.1 `
+  --port 8765 `
+  --replay-video C:\Users\kawai\works\sword-agent-os-workspace\hand_movie.mp4 `
+  --replay-loop `
+  --interval 0.033 `
+  --gesture-every 0.1 `
+  --gesture-model-complexity 0
+```
+
 Home Control Stack から起動された場合、この stack script は `HOME_CONTROL_STACK_STATE_DIR` 配下に
 この supervisor が起動した子プロセスだけの manifest を書きます。停止側はその manifest を使い、
 Chrome など別用途のプロセスを停止対象にしません。
@@ -89,6 +103,7 @@ print(state.to_json())
 | `uv run train_model.py` | `gesture_model.pkl` の生成 |
 | `uv run predict.py` | OpenCV 表示つき detector 確認 |
 | `uv run python apps/settings_gui.py` | 閾値、hold/grace、モデル指定の調整 |
+| `uv run python apps/extract_debug_frames.py <local-video>` | ローカル動画から ignored debug fixtures と detector manifest を生成 |
 | `uv run python apps/serve_browser_monitor.py` | Browser Monitor を `http://127.0.0.1:8770/...` で静的配信 |
 | `uv run python -m unittest discover -s tests` | 単体テスト |
 
@@ -102,6 +117,8 @@ print(state.to_json())
 ## Security Boundaries
 
 - `.env`、ログ、CSV、`.pkl` は `.gitignore` 対象です。学習データとモデルは信頼できる保管先で管理してください。
+- ローカル replay 動画、抽出フレーム、`tests/pict_for_debug/` 配下の manifest/summary は local-only fixture です。
+  Git に含めず、必要な場合はパスだけを coordination ledger に記録してください。
 - `gesture_model.pkl` は joblib/pickle 形式です。外部から受け取ったモデルは SHA-256 を確認して `--model-sha256` を指定してください。
 - WebSocket を localhost 以外で公開する場合は token と exact origin を設定してください。wildcard origin は使いません。
 - MediaMTX の外部公開、LAN 公開、TLS 終端は統合側の責務です。この module は localhost 開発を基準にしています。

@@ -1,6 +1,9 @@
 import argparse
 import math
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 from apps.serve_camera_hub import (
     build_parser,
@@ -11,6 +14,7 @@ from apps.serve_camera_hub import (
     copy_processor_metrics,
     due,
     FfmpegPipeCapture,
+    looks_like_local_file_source,
     fourcc_to_text,
     normalized_landmarks_payload,
     parse_camera_backend,
@@ -26,12 +30,14 @@ from apps.serve_camera_hub import (
     parse_max_queue,
     parse_model_complexity,
     parse_port,
+    parse_replay_video_path,
     parse_threshold,
     parse_tool_path,
     parse_timeout_ms,
     redact_camera_source,
     resolve_auth_token,
     safe_runtime_error,
+    VideoReplayCapture,
 )
 
 
@@ -70,6 +76,7 @@ class ServeCameraHubTests(unittest.TestCase):
     def test_parse_camera_options(self):
         self.assertEqual(parse_camera_backend(" DSHOW "), "dshow")
         self.assertEqual(parse_camera_backend(" ffmpeg-pipe "), "ffmpeg-pipe")
+        self.assertEqual(parse_camera_backend(" replay-video "), "replay-video")
         self.assertEqual(parse_camera_fps("30"), 30.0)
         self.assertEqual(parse_fourcc("mjpg"), "MJPG")
         self.assertEqual(parse_tool_path(" ffmpeg "), "ffmpeg")
@@ -87,6 +94,17 @@ class ServeCameraHubTests(unittest.TestCase):
             parse_camera_source(" ")
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_tool_path(" ")
+
+    def test_parse_replay_video_path_requires_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "sample.mp4"
+            video.write_bytes(b"local test video")
+
+            self.assertEqual(parse_replay_video_path(str(video)), str(video.resolve()))
+            with self.assertRaises(argparse.ArgumentTypeError):
+                parse_replay_video_path(str(Path(directory) / "missing.mp4"))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_replay_video_path(" ")
 
     def test_parse_model_complexity_accepts_mediapipe_values(self):
         self.assertEqual(parse_model_complexity("0"), 0)
@@ -154,6 +172,28 @@ class ServeCameraHubTests(unittest.TestCase):
         self.assertEqual(args.gesture_model_complexity, 0)
         self.assertTrue(args.publish_landmarks)
 
+    def test_build_parser_accepts_replay_video_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "sample.mp4"
+            video.write_bytes(b"local test video")
+
+            args = build_parser().parse_args(
+                [
+                    "--replay-video",
+                    str(video),
+                    "--no-replay-loop",
+                    "--replay-fps",
+                    "12.5",
+                    "--interval",
+                    "0.08",
+                ]
+            )
+
+        self.assertEqual(args.replay_video, str(video.resolve()))
+        self.assertFalse(args.replay_loop)
+        self.assertEqual(args.replay_fps, 12.5)
+        self.assertEqual(args.interval, 0.08)
+
     def test_build_parser_defaults_to_low_latency_rtsp_options(self):
         args = build_parser().parse_args([])
 
@@ -174,6 +214,53 @@ class ServeCameraHubTests(unittest.TestCase):
                 fps=30,
                 ffmpeg_path="ffmpeg",
             )
+
+    def test_video_replay_capture_loops_after_eof(self):
+        class FakeCapture:
+            def __init__(self):
+                self.frames = ["frame-0", "frame-1"]
+                self.index = 0
+                self.released = False
+
+            def isOpened(self):
+                return True
+
+            def read(self):
+                if self.index >= len(self.frames):
+                    return False, None
+                frame = self.frames[self.index]
+                self.index += 1
+                return True, frame
+
+            def get(self, _prop_id):
+                return 0.0
+
+            def set(self, _prop_id, value):
+                self.index = int(value)
+                return True
+
+            def release(self):
+                self.released = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "sample.mp4"
+            video.write_bytes(b"local test video")
+            fake_capture = FakeCapture()
+            with mock.patch(
+                "apps.serve_camera_hub.cv2.VideoCapture",
+                return_value=fake_capture,
+            ):
+                replay = VideoReplayCapture(str(video), loop=True)
+
+                self.assertEqual(replay.read(), (True, "frame-0"))
+                self.assertEqual(replay.read(), (True, "frame-1"))
+                self.assertEqual(replay.read(), (True, "frame-0"))
+                self.assertEqual(replay.loop_count, 1)
+                self.assertEqual(replay.metadata()["mode"], "replay-video")
+                self.assertEqual(replay.metadata()["source"], "local-file:sample.mp4")
+                replay.release()
+
+            self.assertTrue(fake_capture.released)
 
     def test_compressed_image_binary_payload_describes_binary_jpeg(self):
         payload = compressed_image_binary_payload(byte_length=1234)
@@ -337,6 +424,11 @@ class ServeCameraHubTests(unittest.TestCase):
             "rtsp://127.0.0.1:8554/cam0",
         )
         self.assertEqual(redact_camera_source("0"), "0")
+        self.assertTrue(looks_like_local_file_source("hand_movie.mp4"))
+        self.assertEqual(
+            redact_camera_source(r"C:\Users\kawai\works\hand_movie.mp4"),
+            "local-file:hand_movie.mp4",
+        )
 
     def test_safe_runtime_error_does_not_report_paths_or_model_details(self):
         self.assertEqual(

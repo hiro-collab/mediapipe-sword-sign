@@ -11,7 +11,8 @@ __pycache__/
 .uv/
 .uv-cache/
 .runtime/
-tests/pict_for_debug/*.png
+tests/pict_for_debug/**
+!tests/pict_for_debug/
 !tests/pict_for_debug/.gitkeep
 
 # Local avatar/model assets; keep redistribution-sensitive VRM files out of Git.
