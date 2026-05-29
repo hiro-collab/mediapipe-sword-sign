@@ -258,6 +258,9 @@ class CameraHubStackTests(unittest.TestCase):
             host="127.0.0.1",
             port=8770,
             viewer_path=Path("apps/browser_camera_hub_viewer.html"),
+            media_url="http://127.0.0.1:8889/cam0?controls=false",
+            ws_url="ws://127.0.0.1:18865",
+            target="sword_sign",
             allow_remote=False,
         )
 
@@ -266,6 +269,11 @@ class CameraHubStackTests(unittest.TestCase):
             ["uv", "run", "python", "apps/serve_browser_monitor.py"],
         )
         self.assertIn("--viewer-path", args)
+        self.assertIn("--media-url", args)
+        self.assertIn("http://127.0.0.1:8889/cam0?controls=false", args)
+        self.assertIn("--ws-url", args)
+        self.assertIn("ws://127.0.0.1:18865", args)
+        self.assertIn("--target", args)
         self.assertNotIn("--allow-remote", args)
 
     def test_stack_ports_include_viewer_server_by_default(self):

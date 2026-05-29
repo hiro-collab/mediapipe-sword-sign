@@ -69,6 +69,34 @@ class BrowserMonitorServerTests(unittest.TestCase):
         )
         self.assertEqual(server.request_path("/foo%20bar"), "/foo bar")
 
+    def test_should_redirect_to_default_only_for_bare_viewer_routes(self):
+        self.assertTrue(server.should_redirect_to_default("/"))
+        self.assertTrue(
+            server.should_redirect_to_default("/browser_camera_hub_viewer.html")
+        )
+        self.assertFalse(
+            server.should_redirect_to_default(
+                "/browser_camera_hub_viewer.html?mediaUrl=x"
+            )
+        )
+        self.assertFalse(server.should_redirect_to_default("/healthz"))
+
+    def test_parser_accepts_default_viewer_routing_urls(self):
+        args = server.build_parser().parse_args(
+            [
+                "--media-url",
+                "http://127.0.0.1:8889/cam0?controls=false",
+                "--ws-url",
+                "ws://127.0.0.1:18865",
+                "--target",
+                "sword_sign",
+            ]
+        )
+
+        self.assertEqual(args.media_url, "http://127.0.0.1:8889/cam0?controls=false")
+        self.assertEqual(args.ws_url, "ws://127.0.0.1:18865")
+        self.assertEqual(args.target, "sword_sign")
+
 
 if __name__ == "__main__":
     unittest.main()

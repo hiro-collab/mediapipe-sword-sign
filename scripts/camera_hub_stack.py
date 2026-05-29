@@ -186,6 +186,9 @@ class StackSupervisor:
                 host=self.args.viewer_host,
                 port=self.args.viewer_port,
                 viewer_path=self.repo_root / "apps" / "browser_camera_hub_viewer.html",
+                media_url=media_url,
+                ws_url=ws_url,
+                target="sword_sign",
                 allow_remote=self.args.viewer_allow_remote,
             )
             self._start("browser-monitor", viewer_args)
@@ -652,6 +655,9 @@ def build_viewer_server_args(
     host: str,
     port: int,
     viewer_path: Path,
+    media_url: str,
+    ws_url: str,
+    target: str,
     allow_remote: bool,
 ) -> list[str]:
     args = [
@@ -665,6 +671,12 @@ def build_viewer_server_args(
         str(port),
         "--viewer-path",
         str(viewer_path),
+        "--media-url",
+        media_url,
+        "--ws-url",
+        ws_url,
+        "--target",
+        target,
     ]
     if allow_remote:
         args.append("--allow-remote")
