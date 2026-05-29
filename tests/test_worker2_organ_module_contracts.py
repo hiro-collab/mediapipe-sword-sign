@@ -17,7 +17,7 @@ from mediapipe_sword_sign.topics import (
 
 class Worker2OrganModuleContractsTests(unittest.TestCase):
     def test_replay_video_source_is_reported_as_filename_only(self):
-        source = r"C:\Users\kawai\private\hand_movie.mp4"
+        source = r"C:\fixtures\agent_os_synthetic_replay.mp4"
 
         payload = camera_status_payload(
             camera_index=0,
@@ -32,8 +32,8 @@ class Worker2OrganModuleContractsTests(unittest.TestCase):
         )
 
         self.assertTrue(looks_like_local_file_source(source))
-        self.assertEqual(payload["camera"]["source"], "local-file:hand_movie.mp4")
-        self.assertEqual(payload["capture"]["source"], "local-file:hand_movie.mp4")
+        self.assertEqual(payload["camera"]["source"], "local-file:agent_os_synthetic_replay.mp4")
+        self.assertEqual(payload["capture"]["source"], "local-file:agent_os_synthetic_replay.mp4")
         self.assertNotIn(str(PureWindowsPath(source).parent), str(payload))
 
     def test_camera_disconnect_state_stays_structured_and_non_secret(self):
