@@ -26,6 +26,7 @@ class CameraHubStackTests(unittest.TestCase):
     def test_build_ffmpeg_args_uses_dshow_camera_name(self):
         args = stack.build_ffmpeg_args(
             ffmpeg="ffmpeg",
+            ffmpeg_video_source="dshow",
             camera_name="HD Pro Webcam C920",
             width=640,
             height=480,
