@@ -117,6 +117,7 @@ class StackSupervisor:
             "ffmpeg-cam0",
             build_ffmpeg_args(
                 ffmpeg=ffmpeg,
+                ffmpeg_video_source=self.args.ffmpeg_video_source,
                 camera_name=self.args.camera_name,
                 width=self.args.width,
                 height=self.args.height,
@@ -414,6 +415,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=parse_positive_int, default=30)
     parser.add_argument("--bitrate", default="800k")
     parser.add_argument("--gop", type=parse_positive_int, default=30)
+    parser.add_argument(
+        "--ffmpeg-video-source",
+        choices=["dshow", "testsrc"],
+        default="dshow",
+        help="FFmpeg publisher input source. testsrc is for smoke tests without a real camera.",
+    )
     parser.add_argument("--hub-host", default="127.0.0.1")
     parser.add_argument("--hub-port", type=parse_port, default=8765)
     parser.add_argument("--publish-jpeg-every", type=parse_non_negative_float, default=0.0)
@@ -516,6 +523,7 @@ def parse_model_complexity(value: str) -> int:
 def build_ffmpeg_args(
     *,
     ffmpeg: str,
+    ffmpeg_video_source: str,
     camera_name: str,
     width: int,
     height: int,
@@ -524,16 +532,29 @@ def build_ffmpeg_args(
     gop: int,
     rtsp_url: str,
 ) -> list[str]:
+    if ffmpeg_video_source == "testsrc":
+        input_args = [
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size={width}x{height}:rate={fps}",
+        ]
+    else:
+        input_args = [
+            "-f",
+            "dshow",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            str(fps),
+            "-i",
+            f"video={camera_name}",
+        ]
+
     return [
         ffmpeg,
-        "-f",
-        "dshow",
-        "-video_size",
-        f"{width}x{height}",
-        "-framerate",
-        str(fps),
-        "-i",
-        f"video={camera_name}",
+        *input_args,
         "-c:v",
         "libx264",
         "-pix_fmt",
