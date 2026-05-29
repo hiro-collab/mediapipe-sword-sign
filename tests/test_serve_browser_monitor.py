@@ -97,6 +97,11 @@ class BrowserMonitorServerTests(unittest.TestCase):
         self.assertEqual(args.ws_url, "ws://127.0.0.1:18865")
         self.assertEqual(args.target, "sword_sign")
 
+    def test_parser_defaults_to_system_cell_camera_hub_port(self):
+        args = server.build_parser().parse_args([])
+
+        self.assertEqual(args.ws_url, "ws://127.0.0.1:18865")
+
 
 if __name__ == "__main__":
     unittest.main()

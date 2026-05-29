@@ -15,7 +15,7 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DEFAULT_MEDIA_URL = (
     "http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true"
 )
-DEFAULT_WS_URL = "ws://127.0.0.1:8765"
+DEFAULT_WS_URL = "ws://127.0.0.1:18865"
 DEFAULT_TARGET = "sword_sign"
 
 
