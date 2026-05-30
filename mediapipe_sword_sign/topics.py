@@ -162,9 +162,41 @@ def parse_binary_topic_message(message: bytes) -> tuple[dict[str, object], bytes
         envelope = json.loads(message[header_start:header_end].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("binary topic header is not valid JSON") from exc
+    return validate_topic_envelope(envelope), message[header_end:]
+
+
+def validate_topic_envelope(envelope: object) -> dict[str, object]:
     if not isinstance(envelope, dict):
-        raise ValueError("binary topic header must decode to an object")
-    return envelope, message[header_end:]
+        raise ValueError("topic envelope must be an object")
+
+    schema_version = _positive_int(
+        envelope.get("schema_version"),
+        name="schema_version",
+    )
+    if schema_version != TOPIC_ENVELOPE_SCHEMA_VERSION:
+        raise ValueError(
+            f"schema_version must be {TOPIC_ENVELOPE_SCHEMA_VERSION}",
+        )
+
+    header = envelope.get("header")
+    if not isinstance(header, Mapping):
+        raise ValueError("topic header must be an object")
+
+    payload = envelope.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("topic payload must be an object")
+
+    return {
+        "schema_version": schema_version,
+        "topic": _topic_name(envelope.get("topic")),
+        "msg_type": _non_empty_text(envelope.get("msg_type"), name="msg_type"),
+        "header": {
+            "seq": _sequence(header.get("seq")),
+            "stamp": _finite_float(header.get("stamp"), name="header stamp"),
+            "frame_id": _non_empty_text(header.get("frame_id"), name="frame_id"),
+        },
+        "payload": dict(payload),
+    }
 
 
 def _sequence(value: int) -> int:

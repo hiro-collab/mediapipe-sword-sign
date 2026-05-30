@@ -20,6 +20,7 @@ from .topics import (
     parse_binary_topic_message,
     topic_json,
     topic_payload,
+    validate_topic_envelope,
 )
 from .types import (
     GESTURE_NONE,
@@ -58,4 +59,5 @@ __all__ = [
     "relative_landmark_features",
     "topic_json",
     "topic_payload",
+    "validate_topic_envelope",
 ]

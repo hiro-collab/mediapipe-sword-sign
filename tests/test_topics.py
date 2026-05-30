@@ -11,6 +11,7 @@ from mediapipe_sword_sign.topics import (
     parse_binary_topic_message,
     topic_json,
     topic_payload,
+    validate_topic_envelope,
 )
 
 
@@ -66,6 +67,77 @@ class TopicTests(unittest.TestCase):
     def test_parse_binary_topic_message_rejects_unknown_message(self):
         with self.assertRaises(ValueError):
             parse_binary_topic_message(b"not-a-topic-message")
+
+    def test_validate_topic_envelope_accepts_topic_payload(self):
+        envelope = validate_topic_envelope(
+            topic_payload(
+                SWORD_SIGN_STATE_TOPIC,
+                MSG_TYPE_GESTURE_STATE,
+                {"type": "gesture_state", "primary": "sword_sign"},
+                sequence=4,
+                stamp=3.5,
+                frame_id="camera",
+            )
+        )
+
+        self.assertEqual(envelope["topic"], SWORD_SIGN_STATE_TOPIC)
+        self.assertEqual(envelope["msg_type"], MSG_TYPE_GESTURE_STATE)
+        self.assertEqual(envelope["header"]["seq"], 4)
+        self.assertEqual(envelope["payload"]["primary"], "sword_sign")
+
+    def test_validate_topic_envelope_rejects_synthetic_mutations(self):
+        valid = topic_payload(
+            SWORD_SIGN_STATE_TOPIC,
+            MSG_TYPE_GESTURE_STATE,
+            {"type": "gesture_state"},
+            sequence=1,
+            stamp=1.0,
+        )
+        mutations = [
+            ("not object", []),
+            ("missing schema", {**valid, "schema_version": None}),
+            ("wrong schema", {**valid, "schema_version": 999}),
+            ("bad topic", {**valid, "topic": "vision/sword_sign/state"}),
+            ("empty msg type", {**valid, "msg_type": " "}),
+            ("bad header", {**valid, "header": []}),
+            (
+                "negative sequence",
+                {**valid, "header": {**valid["header"], "seq": -1}},
+            ),
+            (
+                "non finite stamp",
+                {**valid, "header": {**valid["header"], "stamp": float("nan")}},
+            ),
+            (
+                "control frame id",
+                {**valid, "header": {**valid["header"], "frame_id": "cam\n0"}},
+            ),
+            ("bad payload", {**valid, "payload": []}),
+        ]
+
+        for label, mutation in mutations:
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError):
+                    validate_topic_envelope(mutation)
+
+    def test_parse_binary_topic_message_validates_mutated_header(self):
+        valid = topic_payload(
+            SWORD_SIGN_STATE_TOPIC,
+            MSG_TYPE_GESTURE_STATE,
+            {"type": "gesture_state"},
+            sequence=1,
+            stamp=1.0,
+        )
+        mutated = {**valid, "header": {**valid["header"], "seq": -1}}
+        header = json.dumps(
+            mutated,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        message = b"MPSSBIN1" + len(header).to_bytes(4, "big") + header + b"data"
+
+        with self.assertRaises(ValueError):
+            parse_binary_topic_message(message)
 
     def test_topic_validation_rejects_bad_topic_names(self):
         with self.assertRaises(ValueError):
