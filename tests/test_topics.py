@@ -96,17 +96,46 @@ class TopicTests(unittest.TestCase):
         mutations = [
             ("not object", []),
             ("missing schema", {**valid, "schema_version": None}),
+            ("string schema", {**valid, "schema_version": "1"}),
+            ("float schema", {**valid, "schema_version": 1.0}),
+            ("bool schema", {**valid, "schema_version": True}),
             ("wrong schema", {**valid, "schema_version": 999}),
             ("bad topic", {**valid, "topic": "vision/sword_sign/state"}),
+            ("array topic", {**valid, "topic": [SWORD_SIGN_STATE_TOPIC]}),
             ("empty msg type", {**valid, "msg_type": " "}),
+            ("object msg type", {**valid, "msg_type": {"type": MSG_TYPE_GESTURE_STATE}}),
             ("bad header", {**valid, "header": []}),
+            (
+                "string sequence",
+                {**valid, "header": {**valid["header"], "seq": "1"}},
+            ),
+            (
+                "float sequence",
+                {**valid, "header": {**valid["header"], "seq": 1.0}},
+            ),
+            (
+                "bool sequence",
+                {**valid, "header": {**valid["header"], "seq": True}},
+            ),
             (
                 "negative sequence",
                 {**valid, "header": {**valid["header"], "seq": -1}},
             ),
             (
+                "string stamp",
+                {**valid, "header": {**valid["header"], "stamp": "1.0"}},
+            ),
+            (
+                "bool stamp",
+                {**valid, "header": {**valid["header"], "stamp": False}},
+            ),
+            (
                 "non finite stamp",
                 {**valid, "header": {**valid["header"], "stamp": float("nan")}},
+            ),
+            (
+                "list frame id",
+                {**valid, "header": {**valid["header"], "frame_id": ["camera"]}},
             ),
             (
                 "control frame id",

@@ -216,7 +216,9 @@ def _topic_name(value: str) -> str:
 
 
 def _non_empty_text(value: str, *, name: str) -> str:
-    text = str(value).strip()
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    text = value.strip()
     if not text:
         raise ValueError(f"{name} must not be empty")
     if any(ord(char) < 32 or ord(char) == 127 for char in text):
@@ -225,23 +227,20 @@ def _non_empty_text(value: str, *, name: str) -> str:
 
 
 def _finite_float(value: float, *, name: str) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a number") from exc
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    parsed = float(value)
     if not math.isfinite(parsed):
         raise ValueError(f"{name} must be finite")
     return parsed
 
 
 def _non_negative_int(value: int, *, name: str) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if parsed < 0:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < 0:
         raise ValueError(f"{name} must be 0 or greater")
-    return parsed
+    return value
 
 
 def _positive_int(value: int, *, name: str) -> int:
