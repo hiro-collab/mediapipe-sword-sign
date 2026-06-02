@@ -12,6 +12,32 @@ MediaPipe Hands と学習済みモデルで `sword_sign` / `victory` / `none` �
 - `scripts/start_camera_hub_stack.bat`: MediaMTX、FFmpeg publish、Camera Hub、Browser Monitor をまとめて起動するローカル統合入口。
 - Home Control の操作実行、UI の業務ロジック、複数ブラウザへの映像配信はこの module の責務ではありません。
 
+## 初期セットアップ
+
+```powershell
+uv sync
+uv run python -m unittest discover -s tests
+```
+
+通常の統合導線では FFmpeg と MediaMTX も必要です。PowerShell から次が見えることを確認します。
+
+```powershell
+ffmpeg -version
+ffprobe -version
+mediamtx --version
+```
+
+学習用 CSV、`gesture_model.pkl`、replay 動画、抽出 frame、`.runtime/`、`.cache/`、`.venv/` はローカル資材です。Git に入れる前提にしないでください。
+
+## dotenv / local config
+
+この repo には標準の `.env.example` はありません。Camera Hub の通常起動は CLI 引数で設定します。
+control-plane から起動する場合は、control-plane 側の `.env` に `MEDIAPIPE_SWORD_SIGN_*` や
+FFmpeg / MediaMTX のパスを設定します。
+
+ローカル学習済みモデルを使う場合は、信頼できる保管先に置き、必要なら起動引数または control-plane
+設定で model path と SHA-256 を指定します。外部から受け取った pickle/joblib モデルを無検証で使わないでください。
+
 ## Primary Integration Route
 
 通常の統合導線は **FFmpeg publish + MediaMTX video + Camera Hub topic** です。
