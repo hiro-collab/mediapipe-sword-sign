@@ -1,6 +1,7 @@
 .venv/
 .tmp-envs/
 __pycache__/
+*.egg-info/
 .pytest_cache/
 *.csv
 *.pkl
