@@ -82,7 +82,7 @@ MediaMTX と FFmpeg の詳細手順は [MediaMTX Integration](docs/mediamtx_inte
 uv run python apps/serve_camera_hub.py `
   --host 127.0.0.1 `
   --port 8765 `
-  --replay-video C:\Users\kawai\works\sword-agent-os-workspace\hand_movie.mp4 `
+  --replay-video <workspace>\local\media\movie\samples20260603\sword.mp4 `
   --replay-loop `
   --interval 0.033 `
   --gesture-every 0.1 `
