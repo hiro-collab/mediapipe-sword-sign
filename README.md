@@ -126,6 +126,7 @@ print(state.to_json())
 | Command | Purpose |
 | --- | --- |
 | `uv run collect_data.py` | gesture 学習用 CSV の収集 |
+| `uv run python apps/extract_video_training_rows.py <local-video> --label sword` | ローカル動画から gesture 学習用 row を抽出 |
 | `uv run train_model.py` | `gesture_model.pkl` の生成 |
 | `uv run predict.py` | OpenCV 表示つき detector 確認 |
 | `uv run python apps/settings_gui.py` | 閾値、hold/grace、モデル指定の調整 |
@@ -139,6 +140,43 @@ print(state.to_json())
 
 `publish_udp.py`、`serve_websocket.py`、Python JPEG topic、OpenCV RTSP fallback は通常導線ではありません。
 互換・検証・切り分け用途は [Retired And Compatibility Paths](docs/retired-paths.md) にまとめています。
+
+### Local video training-row extraction
+
+`apps/extract_video_training_rows.py` は、実カメラの対話式収集を繰り返さずに、
+ローカル動画から `train_model.py` 互換の training row CSV を作る開発・検証用 helper です。
+`collect_data.py` と同じく `features_from_hand_landmarks` を使い、デフォルトでは
+MediaPipe 処理前に左右反転します。
+
+```powershell
+uv run python apps/extract_video_training_rows.py `
+  <local-video> `
+  --label sword `
+  --every-frames 5 `
+  --max-rows 500
+```
+
+Label mapping:
+
+```text
+0 = sword
+1 = victory
+2 = none
+```
+
+Sampling behavior:
+
+- `--start-frame` 以降を `--every-frames` 間隔で読む。
+- hand landmarks が検出された frame だけ CSV row を書く。
+- `--max-rows` は frame 数ではなく、書き込む hand row 数の上限。
+- `--flip` / `--no-flip` で mirror 挙動を切り替える。デフォルトは `--flip`。
+- デフォルト出力先は `.runtime/training_rows/`。CSV と summary は local/generated artifact として扱う。
+- `--output-csv` は `--output-dir` 配下の相対パスだけを受け付ける。
+- 同じ動画と同じ引数では同じ frame sampling を行う。乱数 seed は使わない。
+
+CLI は raw row values を標準出力しません。表示するのは source filename、SHA-256、
+label、件数、生成ファイル名などの summary だけです。生成 CSV、summary、候補モデルは
+そのまま commit / push しないでください。
 
 ## Security Boundaries
 
