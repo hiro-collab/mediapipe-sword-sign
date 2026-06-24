@@ -24,6 +24,7 @@ stack = load_stack_module()
 
 class CameraHubStackTests(unittest.TestCase):
     def test_build_ffmpeg_args_uses_dshow_camera_name(self):
+        rtsp_url = stack.mediamtx_rtsp_url()
         args = stack.build_ffmpeg_args(
             ffmpeg="ffmpeg",
             ffmpeg_video_source="dshow",
@@ -33,14 +34,14 @@ class CameraHubStackTests(unittest.TestCase):
             fps=30,
             bitrate="800k",
             gop=30,
-            rtsp_url="rtsp://127.0.0.1:8554/cam0",
+            rtsp_url=rtsp_url,
         )
 
         self.assertIn("video=HD Pro Webcam C920", args)
         self.assertIn("-rtsp_transport", args)
         self.assertIn("-g", args)
         self.assertIn("-keyint_min", args)
-        self.assertEqual(args[-1], "rtsp://127.0.0.1:8554/cam0")
+        self.assertEqual(args[-1], rtsp_url)
 
     def test_default_opencv_ffmpeg_options_are_tcp_only(self):
         self.assertIn("rtsp_transport;tcp", stack.DEFAULT_OPENCV_FFMPEG_OPTIONS)
@@ -48,15 +49,16 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertIn("reorder_queue_size;0", stack.DEFAULT_OPENCV_FFMPEG_OPTIONS)
 
     def test_build_ffprobe_args_limits_live_rtsp_probe(self):
+        rtsp_url = stack.mediamtx_rtsp_url()
         args = stack.build_ffprobe_args(
             "ffprobe",
-            "rtsp://127.0.0.1:8554/cam0",
+            rtsp_url,
         )
 
         self.assertIn("-analyzeduration", args)
         self.assertIn("-probesize", args)
         self.assertIn("-select_streams", args)
-        self.assertEqual(args[-1], "rtsp://127.0.0.1:8554/cam0")
+        self.assertEqual(args[-1], rtsp_url)
 
     def test_probe_rtsp_once_treats_timeout_with_video_output_as_ready(self):
         original_run = stack.subprocess.run
@@ -97,8 +99,8 @@ class CameraHubStackTests(unittest.TestCase):
             uv="uv",
             host="127.0.0.1",
             port=8765,
-            rtsp_url="rtsp://127.0.0.1:8554/cam0",
-            frame_id="cam0",
+            rtsp_url=stack.mediamtx_rtsp_url(),
+            frame_id=stack.DEFAULT_MEDIAMTX_PATH,
             publish_jpeg_every=0.0,
             gesture_every=0.05,
             gesture_model_complexity=0,
@@ -135,7 +137,8 @@ class CameraHubStackTests(unittest.TestCase):
         args = stack.build_parser().parse_args([])
 
         self.assertEqual(args.camera_name, "HD Pro Webcam C920")
-        self.assertEqual(args.frame_id, "cam0")
+        self.assertEqual(args.frame_id, stack.DEFAULT_MEDIAMTX_PATH)
+        self.assertEqual(args.rtsp_url, stack.mediamtx_rtsp_url())
         self.assertEqual(args.publish_jpeg_every, 0.0)
         self.assertEqual(args.capture_interval, 0.0)
         self.assertEqual(args.gop, 30)
@@ -221,17 +224,47 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertEqual(stack.connect_host("127.0.0.1"), "127.0.0.1")
 
     def test_mediamtx_webrtc_url_uses_rtsp_path_for_browser_video(self):
-        url = stack.mediamtx_webrtc_url("rtsp://127.0.0.1:8554/cam0")
+        rtsp_url = stack.mediamtx_rtsp_url()
+        url = stack.mediamtx_webrtc_url(rtsp_url)
 
         self.assertEqual(
             url,
-            "http://127.0.0.1:8889/cam0?controls=false&muted=true&autoplay=true",
+            (
+                "http://127.0.0.1:8889/"
+                f"{stack.DEFAULT_MEDIAMTX_PATH}"
+                "?controls=false&muted=true&autoplay=true"
+            ),
+        )
+
+    def test_mediamtx_default_url_helpers_centralize_ports_and_path(self):
+        self.assertEqual(
+            stack.MEDIAMTX_PORTS,
+            (
+                stack.DEFAULT_MEDIAMTX_RTSP_PORT,
+                stack.DEFAULT_MEDIAMTX_HLS_PORT,
+                stack.DEFAULT_MEDIAMTX_WEBRTC_PORT,
+            ),
+        )
+        self.assertEqual(
+            stack.mediamtx_rtsp_url(path="/cam2"),
+            "rtsp://127.0.0.1:8554/cam2",
+        )
+        self.assertEqual(
+            stack.mediamtx_webrtc_url(
+                stack.mediamtx_rtsp_url(path="/cam2"),
+                webrtc_port=18889,
+            ),
+            "http://127.0.0.1:18889/cam2?controls=false&muted=true&autoplay=true",
         )
 
     def test_browser_monitor_url_passes_media_and_websocket_urls(self):
+        media_url = stack.mediamtx_webrtc_url(stack.mediamtx_rtsp_url()).replace(
+            "&muted=true&autoplay=true",
+            "",
+        )
         url = stack.browser_monitor_url(
             "http://127.0.0.1:8770/browser_camera_hub_viewer.html",
-            media_url="http://127.0.0.1:8889/cam0?controls=false",
+            media_url=media_url,
             ws_url="ws://127.0.0.1:8765",
         )
 
@@ -239,7 +272,10 @@ class CameraHubStackTests(unittest.TestCase):
             "http://127.0.0.1:8770/browser_camera_hub_viewer.html?",
             url,
         )
-        self.assertIn("mediaUrl=http%3A%2F%2F127.0.0.1%3A8889%2Fcam0", url)
+        self.assertIn(
+            f"mediaUrl={stack.quote(media_url, safe='')}",
+            url,
+        )
         self.assertIn("wsUrl=ws%3A%2F%2F127.0.0.1%3A8765", url)
 
     def test_viewer_server_helpers_build_http_routes(self):
@@ -253,12 +289,16 @@ class CameraHubStackTests(unittest.TestCase):
         )
 
     def test_build_viewer_server_args_uses_separate_static_server(self):
+        media_url = stack.mediamtx_webrtc_url(stack.mediamtx_rtsp_url()).replace(
+            "&muted=true&autoplay=true",
+            "",
+        )
         args = stack.build_viewer_server_args(
             uv="uv",
             host="127.0.0.1",
             port=8770,
             viewer_path=Path("apps/browser_camera_hub_viewer.html"),
-            media_url="http://127.0.0.1:8889/cam0?controls=false",
+            media_url=media_url,
             ws_url="ws://127.0.0.1:18865",
             target="sword_sign",
             allow_remote=False,
@@ -270,7 +310,7 @@ class CameraHubStackTests(unittest.TestCase):
         )
         self.assertIn("--viewer-path", args)
         self.assertIn("--media-url", args)
-        self.assertIn("http://127.0.0.1:8889/cam0?controls=false", args)
+        self.assertIn(media_url, args)
         self.assertIn("--ws-url", args)
         self.assertIn("ws://127.0.0.1:18865", args)
         self.assertIn("--target", args)

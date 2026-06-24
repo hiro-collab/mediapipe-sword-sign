@@ -8,6 +8,9 @@
 #
 #   mediamtx configs/mediamtx/mediamtx.windows.example.yml
 #
+# Keep these sample endpoints aligned with camera_hub_stack.py
+# DEFAULT_MEDIAMTX_* constants.
+#
 # Browser WebRTC URLs:
 #   http://127.0.0.1:8889/cam0
 #   http://127.0.0.1:8889/cam1

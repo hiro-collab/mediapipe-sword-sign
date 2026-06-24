@@ -4,7 +4,8 @@
 #
 #   mediamtx configs/mediamtx/mediamtx.publisher.example.yml
 #
-# Then publish a camera from another terminal:
+# Keep these sample endpoints aligned with camera_hub_stack.py
+# DEFAULT_MEDIAMTX_* constants. Then publish a camera from another terminal:
 #
 #   ffmpeg -f dshow -video_size 640x480 -framerate 30 -i video="HD Pro Webcam C920" -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency -b:v 800k -f rtsp rtsp://127.0.0.1:8554/cam0
 

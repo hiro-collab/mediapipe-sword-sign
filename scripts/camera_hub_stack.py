@@ -25,7 +25,16 @@ FFPROBE_PATH_ENV = "FFPROBE_PATH"
 DEFAULT_OPENCV_FFMPEG_OPTIONS = (
     "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|reorder_queue_size;0"
 )
-MEDIAMTX_PORTS = (8554, 8888, 8889)
+DEFAULT_MEDIAMTX_HOST = "127.0.0.1"
+DEFAULT_MEDIAMTX_RTSP_PORT = 8554
+DEFAULT_MEDIAMTX_HLS_PORT = 8888
+DEFAULT_MEDIAMTX_WEBRTC_PORT = 8889
+DEFAULT_MEDIAMTX_PATH = "cam0"
+MEDIAMTX_PORTS = (
+    DEFAULT_MEDIAMTX_RTSP_PORT,
+    DEFAULT_MEDIAMTX_HLS_PORT,
+    DEFAULT_MEDIAMTX_WEBRTC_PORT,
+)
 STACK_PROCESS_PATTERN = (
     "serve_camera_hub|serve_browser_monitor|camera_hub_stack|mediamtx"
 )
@@ -411,8 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Start MediaMTX, FFmpeg camera publish, and Camera Hub in one terminal.",
     )
     parser.add_argument("--camera-name", default="HD Pro Webcam C920")
-    parser.add_argument("--frame-id", default="cam0")
-    parser.add_argument("--rtsp-url", default="rtsp://127.0.0.1:8554/cam0")
+    parser.add_argument("--frame-id", default=DEFAULT_MEDIAMTX_PATH)
+    parser.add_argument("--rtsp-url", default=mediamtx_rtsp_url())
     parser.add_argument("--width", type=parse_positive_int, default=640)
     parser.add_argument("--height", type=parse_positive_int, default=480)
     parser.add_argument("--fps", type=parse_positive_int, default=30)
@@ -1194,16 +1203,30 @@ def http_host(bind_host: str) -> str:
     return host
 
 
-def mediamtx_webrtc_url(rtsp_url: str) -> str:
+def mediamtx_rtsp_url(
+    *,
+    host: str = DEFAULT_MEDIAMTX_HOST,
+    rtsp_port: int = DEFAULT_MEDIAMTX_RTSP_PORT,
+    path: str = DEFAULT_MEDIAMTX_PATH,
+) -> str:
+    stream_path = path.lstrip("/") or DEFAULT_MEDIAMTX_PATH
+    return f"rtsp://{http_host(host)}:{rtsp_port}/{quote(stream_path, safe='/')}"
+
+
+def mediamtx_webrtc_url(
+    rtsp_url: str,
+    *,
+    webrtc_port: int = DEFAULT_MEDIAMTX_WEBRTC_PORT,
+) -> str:
     parsed = urlsplit(rtsp_url)
-    host = parsed.hostname or "127.0.0.1"
+    host = parsed.hostname or DEFAULT_MEDIAMTX_HOST
     if host in {"0.0.0.0", "::"}:
-        host = "127.0.0.1"
+        host = DEFAULT_MEDIAMTX_HOST
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
-    path = parsed.path.lstrip("/") or "cam0"
+    path = parsed.path.lstrip("/") or DEFAULT_MEDIAMTX_PATH
     return (
-        f"http://{host}:8889/{quote(path, safe='/')}"
+        f"http://{host}:{webrtc_port}/{quote(path, safe='/')}"
         "?controls=false&muted=true&autoplay=true"
     )
 
