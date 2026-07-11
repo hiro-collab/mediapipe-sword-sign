@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -38,6 +39,19 @@ MEDIAMTX_PORTS = (
 STACK_PROCESS_PATTERN = (
     "serve_camera_hub|serve_browser_monitor|camera_hub_stack|mediamtx"
 )
+STACK_PROCESS_SCRIPT_NAMES = {
+    "camera_hub_stack.py",
+    "serve_browser_monitor.py",
+    "serve_camera_hub.py",
+}
+STACK_PROCESS_CONTROLLER_NAMES = {
+    "powershell",
+    "pwsh",
+    "python",
+    "python3",
+    "pythonw",
+    "uv",
+}
 CAMERA_STATUS_TOPIC = "/camera/status"
 SWORD_SIGN_STATE_TOPIC = "/vision/sword_sign/state"
 REQUIRED_READY_TOPICS = frozenset({CAMERA_STATUS_TOPIC, SWORD_SIGN_STATE_TOPIC})
@@ -797,7 +811,8 @@ def find_existing_stack_processes(
     ports: tuple[int, ...],
     current_pid: int,
 ) -> list[dict[str, object]]:
-    ignored_pids = current_process_family_pids(current_pid)
+    parent_map = process_parent_map()
+    ignored_pids = current_process_family_pids(current_pid, parent_map)
     port_owners = listen_port_owners(ports)
     candidates: dict[int, dict[str, object]] = {}
 
@@ -810,10 +825,19 @@ def find_existing_stack_processes(
             "command": "",
             "ports": sorted(owned_ports),
         }
+    selected_port_owner_pids = frozenset(candidates)
 
     for process in list_matching_processes():
         pid = int(process["pid"])
         if pid in ignored_pids or is_process_discovery_helper(process):
+            continue
+        if pid not in candidates and (
+            not is_expected_stack_process(process)
+            or not any(
+                processes_share_lineage(pid, owner_pid, parent_map)
+                for owner_pid in selected_port_owner_pids
+            )
+        ):
             continue
         existing = candidates.setdefault(
             pid,
@@ -849,13 +873,72 @@ def is_external_process_name(name: str) -> bool:
     return normalized in EXTERNAL_PROCESS_DENYLIST
 
 
-def current_process_family_pids(current_pid: int) -> set[int]:
+def normalized_process_name(name: str) -> str:
+    normalized = name.strip().lower()
+    if normalized.endswith(".exe"):
+        normalized = normalized[:-4]
+    return normalized
+
+
+def command_token_basename(token: str) -> str:
+    return token.strip().strip('"\'').replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def is_expected_stack_process(process: dict[str, object]) -> bool:
+    name = normalized_process_name(str(process.get("name") or ""))
+    command = str(process.get("command") or "")
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return False
+
+    basenames = [command_token_basename(token) for token in tokens]
+    if name == "mediamtx":
+        return any(token in {"mediamtx", "mediamtx.exe"} for token in basenames)
+    if name not in STACK_PROCESS_CONTROLLER_NAMES:
+        return False
+    return any(token in STACK_PROCESS_SCRIPT_NAMES for token in basenames)
+
+
+def processes_share_lineage(
+    first_pid: int,
+    second_pid: int,
+    parent_map: dict[int, int],
+) -> bool:
+    if first_pid == second_pid:
+        return True
+
+    def has_ancestor(pid: int, ancestor_pid: int) -> bool:
+        seen = {pid}
+        for _ in range(64):
+            parent_pid = parent_map.get(pid)
+            if parent_pid is None or parent_pid <= 0 or parent_pid in seen:
+                return False
+            if parent_pid == ancestor_pid:
+                return True
+            seen.add(parent_pid)
+            pid = parent_pid
+        return False
+
+    return has_ancestor(first_pid, second_pid) or has_ancestor(second_pid, first_pid)
+
+
+def process_parent_map() -> dict[int, int]:
     if os.name == "nt":
-        return current_process_family_pids_windows(current_pid)
+        return process_parent_map_windows()
+    return {}
+
+
+def current_process_family_pids(
+    current_pid: int,
+    parent_map: dict[int, int] | None = None,
+) -> set[int]:
+    if os.name == "nt":
+        return current_process_family_pids_windows(current_pid, parent_map)
     return {current_pid, os.getppid()}
 
 
-def current_process_family_pids_windows(current_pid: int) -> set[int]:
+def process_parent_map_windows() -> dict[int, int]:
     command = [
         "powershell",
         "-NoProfile",
@@ -873,7 +956,7 @@ def current_process_family_pids_windows(current_pid: int) -> set[int]:
         check=False,
     )
     if result.returncode != 0 or not result.stdout.strip():
-        return {current_pid, os.getppid()}
+        return {}
 
     import json
 
@@ -888,6 +971,16 @@ def current_process_family_pids_windows(current_pid: int) -> set[int]:
             continue
         parents[pid] = parent
 
+    return parents
+
+
+def current_process_family_pids_windows(
+    current_pid: int,
+    parent_map: dict[int, int] | None = None,
+) -> set[int]:
+    parents = parent_map if parent_map is not None else process_parent_map_windows()
+    if not parents:
+        return {current_pid, os.getppid()}
     family = {current_pid}
     pid = current_pid
     for _ in range(12):

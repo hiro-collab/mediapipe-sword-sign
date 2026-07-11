@@ -337,12 +337,16 @@ class CameraHubStackTests(unittest.TestCase):
 
     def test_find_existing_stack_processes_ignores_current_family(self):
         original_family = stack.current_process_family_pids
+        original_parent_map = stack.process_parent_map
         original_ports = stack.listen_port_owners
         original_matching = stack.list_matching_processes
         original_details = stack.process_details
 
         try:
-            stack.current_process_family_pids = lambda current_pid: {10, 11, 12}
+            stack.current_process_family_pids = (
+                lambda current_pid, parent_map=None: {10, 11, 12}
+            )
+            stack.process_parent_map = lambda: {99: 1}
             stack.listen_port_owners = lambda ports: {11: {8765}, 99: {8554}}
             stack.list_matching_processes = lambda: [
                 {"pid": 12, "name": "uv.exe", "command": "camera_hub_stack.py"},
@@ -364,31 +368,160 @@ class CameraHubStackTests(unittest.TestCase):
             )
         finally:
             stack.current_process_family_pids = original_family
+            stack.process_parent_map = original_parent_map
             stack.listen_port_owners = original_ports
             stack.list_matching_processes = original_matching
             stack.process_details = original_details
 
         self.assertEqual([process["pid"] for process in processes], [99])
 
-    def test_force_stop_refuses_external_browser_process(self):
+    def test_metadata_echo_without_selected_port_is_ignored(self):
+        original_family = stack.current_process_family_pids
+        original_parent_map = stack.process_parent_map
+        original_ports = stack.listen_port_owners
+        original_matching = stack.list_matching_processes
+        original_details = stack.process_details
+
+        try:
+            stack.current_process_family_pids = lambda current_pid, parent_map=None: {10}
+            stack.process_parent_map = lambda: {55: 1, 77: 1}
+            stack.listen_port_owners = lambda ports: {}
+            stack.list_matching_processes = lambda: [
+                {
+                    "pid": 55,
+                    "name": "codex.exe",
+                    "command": "codex prompt mentions camera_hub_stack.py",
+                },
+                {
+                    "pid": 77,
+                    "name": "python.exe",
+                    "command": "python scripts/camera_hub_stack.py",
+                },
+            ]
+            stack.process_details = lambda pids: {}
+
+            processes = stack.find_existing_stack_processes(
+                ports=(8554, 8765),
+                current_pid=10,
+            )
+        finally:
+            stack.current_process_family_pids = original_family
+            stack.process_parent_map = original_parent_map
+            stack.listen_port_owners = original_ports
+            stack.list_matching_processes = original_matching
+            stack.process_details = original_details
+
+        self.assertEqual(processes, [])
+
+    def test_selected_port_owner_is_retained(self):
+        original_family = stack.current_process_family_pids
+        original_parent_map = stack.process_parent_map
+        original_ports = stack.listen_port_owners
+        original_matching = stack.list_matching_processes
+        original_details = stack.process_details
+
+        try:
+            stack.current_process_family_pids = lambda current_pid, parent_map=None: {10}
+            stack.process_parent_map = lambda: {99: 1}
+            stack.listen_port_owners = lambda ports: {99: {8554}}
+            stack.list_matching_processes = lambda: []
+            stack.process_details = lambda pids: {
+                99: {"name": "mediamtx.exe", "command": "mediamtx config.yml"}
+            }
+
+            processes = stack.find_existing_stack_processes(
+                ports=(8554, 8765),
+                current_pid=10,
+            )
+        finally:
+            stack.current_process_family_pids = original_family
+            stack.process_parent_map = original_parent_map
+            stack.listen_port_owners = original_ports
+            stack.list_matching_processes = original_matching
+            stack.process_details = original_details
+
+        self.assertEqual([process["pid"] for process in processes], [99])
+        self.assertEqual(processes[0]["ports"], [8554])
+
+    def test_validated_owner_lineage_is_retained_without_sibling_expansion(self):
+        original_family = stack.current_process_family_pids
+        original_parent_map = stack.process_parent_map
+        original_ports = stack.listen_port_owners
+        original_matching = stack.list_matching_processes
+        original_details = stack.process_details
+
+        supervisor = {
+            "pid": 55,
+            "name": "uv.exe",
+            "command": "uv run python scripts/camera_hub_stack.py",
+        }
+        direct_child = {
+            "pid": 88,
+            "name": "python.exe",
+            "command": "python apps/serve_browser_monitor.py",
+        }
+        sibling = {
+            "pid": 77,
+            "name": "python.exe",
+            "command": "python apps/serve_camera_hub.py",
+        }
+
+        try:
+            stack.current_process_family_pids = lambda current_pid, parent_map=None: {10}
+            stack.process_parent_map = lambda: {55: 1, 77: 55, 88: 99, 99: 55}
+            stack.listen_port_owners = lambda ports: {99: {8765}}
+            stack.process_details = lambda pids: {
+                99: {
+                    "name": "python.exe",
+                    "command": "python apps/serve_camera_hub.py",
+                }
+            }
+
+            results = []
+            for matching in (
+                [supervisor, direct_child, sibling],
+                [sibling, direct_child, supervisor],
+            ):
+                stack.list_matching_processes = lambda rows=matching: rows
+                processes = stack.find_existing_stack_processes(
+                    ports=(8554, 8765),
+                    current_pid=10,
+                )
+                results.append([process["pid"] for process in processes])
+        finally:
+            stack.current_process_family_pids = original_family
+            stack.process_parent_map = original_parent_map
+            stack.listen_port_owners = original_ports
+            stack.list_matching_processes = original_matching
+            stack.process_details = original_details
+
+        self.assertEqual(results, [[55, 88, 99], [55, 88, 99]])
+
+    def test_force_stop_refuses_external_browser_and_updater_processes(self):
         original_find = stack.find_existing_stack_processes
 
         try:
-            stack.find_existing_stack_processes = lambda ports, current_pid: [
-                {
-                    "pid": 77,
-                    "name": "chrome.exe",
-                    "command": "chrome.exe --type=renderer",
-                    "ports": [8889],
-                }
-            ]
+            for name in ("chrome.exe", "updater.exe"):
+                with self.subTest(name=name):
+                    stack.find_existing_stack_processes = (
+                        lambda ports, current_pid, process_name=name: [
+                            {
+                                "pid": 77,
+                                "name": process_name,
+                                "command": f"{process_name} --background",
+                                "ports": [8889],
+                            }
+                        ]
+                    )
 
-            with self.assertRaisesRegex(RuntimeError, "Refusing to stop external"):
-                stack.check_existing_stack(
-                    ports=(8889,),
-                    force_stop=True,
-                    current_pid=10,
-                )
+                    with self.assertRaisesRegex(
+                        RuntimeError, "Refusing to stop external"
+                    ):
+                        stack.check_existing_stack(
+                            ports=(8889,),
+                            force_stop=True,
+                            current_pid=10,
+                        )
         finally:
             stack.find_existing_stack_processes = original_find
 
