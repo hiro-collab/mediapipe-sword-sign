@@ -29,6 +29,7 @@ class CameraHubStackTests(unittest.TestCase):
         args = stack.build_ffmpeg_args(
             ffmpeg="ffmpeg",
             ffmpeg_video_source="dshow",
+            ffmpeg_input_codec="auto",
             camera_name="HD Pro Webcam C920",
             width=640,
             height=480,
@@ -42,7 +43,44 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertIn("-rtsp_transport", args)
         self.assertIn("-g", args)
         self.assertIn("-keyint_min", args)
+        self.assertNotIn("-vcodec", args)
         self.assertEqual(args[-1], rtsp_url)
+
+    def test_build_ffmpeg_args_can_select_advertised_mjpeg_input(self):
+        args = stack.build_ffmpeg_args(
+            ffmpeg="ffmpeg",
+            ffmpeg_video_source="dshow",
+            ffmpeg_input_codec="mjpeg",
+            camera_name="Logitech StreamCam",
+            width=1920,
+            height=1080,
+            fps=30,
+            bitrate="800k",
+            gop=30,
+            rtsp_url=stack.mediamtx_rtsp_url(),
+        )
+
+        self.assertEqual(args[1:5], ["-f", "dshow", "-vcodec", "mjpeg"])
+        self.assertLess(args.index("-vcodec"), args.index("-i"))
+
+    def test_build_ffmpeg_args_keeps_testsrc_independent_of_dshow_codec(self):
+        args = stack.build_ffmpeg_args(
+            ffmpeg="ffmpeg",
+            ffmpeg_video_source="testsrc",
+            ffmpeg_input_codec="mjpeg",
+            camera_name="unused",
+            width=640,
+            height=480,
+            fps=30,
+            bitrate="800k",
+            gop=30,
+            rtsp_url=stack.mediamtx_rtsp_url(),
+        )
+
+        self.assertIn("lavfi", args)
+        self.assertTrue(any(value.startswith("testsrc=") for value in args))
+        self.assertNotIn("-vcodec", args)
+        self.assertNotIn("mjpeg", args)
 
     def test_default_opencv_ffmpeg_options_are_tcp_only(self):
         self.assertIn("rtsp_transport;tcp", stack.DEFAULT_OPENCV_FFMPEG_OPTIONS)
@@ -143,6 +181,7 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertEqual(args.publish_jpeg_every, 0.0)
         self.assertEqual(args.capture_interval, 0.0)
         self.assertEqual(args.gop, 30)
+        self.assertEqual(args.ffmpeg_input_codec, "auto")
         self.assertEqual(args.hub_camera_backend, "ffmpeg")
         self.assertEqual(args.camera_open_timeout_ms, 5000)
         self.assertEqual(args.camera_read_timeout_ms, 3000)

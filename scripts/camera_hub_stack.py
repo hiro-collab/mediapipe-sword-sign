@@ -145,6 +145,7 @@ class StackSupervisor:
             build_ffmpeg_args(
                 ffmpeg=ffmpeg,
                 ffmpeg_video_source=self.args.ffmpeg_video_source,
+                ffmpeg_input_codec=self.args.ffmpeg_input_codec,
                 camera_name=self.args.camera_name,
                 width=self.args.width,
                 height=self.args.height,
@@ -537,6 +538,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="dshow",
         help="FFmpeg publisher input source. testsrc is for smoke tests without a real camera.",
     )
+    parser.add_argument(
+        "--ffmpeg-input-codec",
+        choices=["auto", "mjpeg"],
+        default="auto",
+        help=(
+            "DirectShow camera input codec. auto preserves the camera default; "
+            "use mjpeg only when the selected device advertises the requested "
+            "resolution and frame rate in MJPEG."
+        ),
+    )
     parser.add_argument("--hub-host", default="127.0.0.1")
     parser.add_argument("--hub-port", type=parse_port, default=8765)
     parser.add_argument("--publish-jpeg-every", type=parse_non_negative_float, default=0.0)
@@ -652,6 +663,7 @@ def build_ffmpeg_args(
     *,
     ffmpeg: str,
     ffmpeg_video_source: str,
+    ffmpeg_input_codec: str,
     camera_name: str,
     width: int,
     height: int,
@@ -669,9 +681,15 @@ def build_ffmpeg_args(
             f"testsrc=size={width}x{height}:rate={fps}",
         ]
     else:
+        codec_args = (
+            []
+            if ffmpeg_input_codec == "auto"
+            else ["-vcodec", ffmpeg_input_codec]
+        )
         input_args = [
             "-f",
             "dshow",
+            *codec_args,
             "-video_size",
             f"{width}x{height}",
             "-framerate",

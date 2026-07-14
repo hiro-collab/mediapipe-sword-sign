@@ -37,6 +37,12 @@ Camera Hub の Python 依存だけでは、複数ブラウザへの映像 fan-ou
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 ```
 
+For a DirectShow camera that explicitly advertises the selected high-resolution
+mode as MJPEG, add `--ffmpeg-input-codec mjpeg`. The default `auto` leaves the
+input codec unspecified. This runtime operator selector only chooses the camera
+transport format; it does not change Camera Hub's gesture/state authority and
+must fail normally when the device does not advertise the requested fps.
+
 この script は以下を起動します。
 
 - MediaMTX

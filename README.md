@@ -54,6 +54,11 @@ USB camera -> FFmpeg -> MediaMTX /cam0 -> Browser video
 scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 ```
 
+DirectShow cameras that advertise high-resolution MJPEG modes can opt in with
+`--ffmpeg-input-codec mjpeg`. Keep the default `auto` unless the selected
+device's local capability listing contains the requested resolution and frame
+rate; this selector does not manufacture an unsupported 60 fps mode.
+
 手動で Camera Hub だけを起動する場合:
 
 ```powershell
