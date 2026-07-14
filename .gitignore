@@ -16,5 +16,10 @@ tests/pict_for_debug/**
 !tests/pict_for_debug/
 !tests/pict_for_debug/.gitkeep
 
+# Local HTTPS certificate material generated for bounded browser/runtime use.
+# Retain locally when needed, but never stage or publish the certificate/key.
+/auto.crt
+/auto.key
+
 # Local avatar/model assets; keep redistribution-sensitive VRM files out of Git.
 .vrm/
