@@ -2,6 +2,7 @@ import argparse
 import math
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -14,6 +15,7 @@ from apps.serve_camera_hub import (
     copy_processor_metrics,
     due,
     FfmpegPipeCapture,
+    LatestFrameCamera,
     looks_like_local_file_source,
     fourcc_to_text,
     normalized_landmarks_payload,
@@ -215,6 +217,114 @@ class ServeCameraHubTests(unittest.TestCase):
                 ffmpeg_path="ffmpeg",
             )
 
+    def test_ffmpeg_pipe_capture_bounds_rtsp_read_wait(self):
+        process = mock.Mock()
+        process.poll.return_value = 0
+        process.stdout = mock.Mock()
+        with mock.patch(
+            "apps.serve_camera_hub.resolve_executable",
+            return_value="ffmpeg",
+        ), mock.patch(
+            "apps.serve_camera_hub.subprocess.Popen",
+            return_value=process,
+        ) as popen:
+            capture = FfmpegPipeCapture(
+                "rtsp://127.0.0.1:8554/cam0",
+                width=640,
+                height=480,
+                fps=30,
+                ffmpeg_path="ffmpeg",
+                read_timeout_ms=750,
+            )
+            capture.release()
+
+        command = popen.call_args.args[0]
+        timeout_index = command.index("-rw_timeout")
+        self.assertEqual(command[timeout_index + 1], "750000")
+        self.assertLess(timeout_index, command.index("-i"))
+
+    def test_latest_frame_camera_reopens_and_clears_stale_frame(self):
+        class FakeCapture:
+            def __init__(self, reads):
+                self.reads = iter(reads)
+                self.last = (False, None)
+                self.released = False
+
+            def isOpened(self):
+                return not self.released
+
+            def read(self):
+                try:
+                    self.last = next(self.reads)
+                except StopIteration:
+                    pass
+                return self.last
+
+            def get(self, _prop_id):
+                return 0.0
+
+            def set(self, _prop_id, _value):
+                return True
+
+            def release(self):
+                self.released = True
+
+        first = FakeCapture(
+            [
+                (True, "frame-before-disconnect"),
+                (False, None),
+                (False, None),
+                (False, None),
+            ]
+        )
+        second = FakeCapture([(True, "frame-after-reconnect")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[first, second],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            camera.start()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                snapshot = camera.snapshot(copy_frame=False)
+                if snapshot.frame == "frame-after-reconnect":
+                    break
+                time.sleep(0.005)
+            camera.stop()
+
+        snapshot = camera.snapshot(copy_frame=False)
+        self.assertEqual(snapshot.frame, "frame-after-reconnect")
+        self.assertTrue(first.released)
+        self.assertTrue(second.released)
+        self.assertEqual(camera.actual_properties()["reconnect_attempts"], 1)
+
+    def test_non_looping_replay_eof_does_not_become_implicit_reconnect_loop(self):
+        capture = mock.Mock()
+        capture.isOpened.return_value = True
+        capture.read.return_value = (False, None)
+        capture.get.return_value = 0.0
+        capture.set.return_value = True
+        capture.metadata = None
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            return_value=capture,
+        ) as opener:
+            camera = LatestFrameCamera(
+                "fixture.mp4",
+                camera_index=0,
+                interval=0.0,
+                backend="replay-video",
+                replay_loop=False,
+            )
+            camera.start()
+            time.sleep(0.12)
+            camera.stop()
+
+        opener.assert_called_once()
+        self.assertEqual(camera.actual_properties()["reconnect_attempts"], 0)
+
     def test_video_replay_capture_loops_after_eof(self):
         class FakeCapture:
             def __init__(self):
@@ -406,6 +516,18 @@ class ServeCameraHubTests(unittest.TestCase):
             frame_read_ok=False,
         )
 
+        self.assertFalse(payload["camera"]["frame_read_ok"])
+
+    def test_camera_status_payload_reports_reconnecting_without_stopping_hub(self):
+        payload = camera_status_payload(
+            camera_index=0,
+            frame_number=12,
+            fps=0.0,
+            frame_read_ok=False,
+            camera_opened=False,
+        )
+
+        self.assertFalse(payload["camera"]["opened"])
         self.assertFalse(payload["camera"]["frame_read_ok"])
 
     def test_fourcc_to_text_decodes_printable_codes(self):

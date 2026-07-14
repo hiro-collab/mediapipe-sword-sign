@@ -255,13 +255,14 @@ def camera_status_payload(
     frame_number: int,
     fps: float,
     frame_read_ok: bool = True,
+    camera_opened: bool = True,
     capture: dict[str, object] | None = None,
     camera_source: str | None = None,
     processors: dict[str, object] | None = None,
 ) -> dict[str, object]:
     camera = {
         "selected_index": camera_index,
-        "opened": True,
+        "opened": bool(camera_opened),
         "frame_read_ok": bool(frame_read_ok),
     }
     if camera_source is not None:
@@ -389,6 +390,7 @@ class FfmpegPipeCapture:
         height: int,
         fps: float | None,
         ffmpeg_path: str,
+        read_timeout_ms: int = 1000,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError("ffmpeg-pipe backend requires camera width and height")
@@ -397,6 +399,7 @@ class FfmpegPipeCapture:
         self.height = int(height)
         self.fps = float(fps or 0.0)
         self.ffmpeg_path = resolve_executable(ffmpeg_path)
+        self.read_timeout_ms = max(1, int(read_timeout_ms))
         self.frame_size = self.width * self.height * 3
         self.process: subprocess.Popen[bytes] | None = None
         self._open()
@@ -463,6 +466,8 @@ class FfmpegPipeCapture:
             "low_delay",
             "-rtsp_transport",
             "tcp",
+            "-rw_timeout",
+            str(self.read_timeout_ms * 1000),
             "-i",
             self.source,
             "-an",
@@ -577,6 +582,7 @@ def open_video_capture(
             height=int(height or 480),
             fps=fps,
             ffmpeg_path=ffmpeg_path,
+            read_timeout_ms=read_timeout_ms,
         )
 
     backend_flag = CAMERA_BACKEND_FLAGS[backend]
@@ -661,19 +667,24 @@ class LatestFrameCamera:
         self.interval = interval
         self.backend = backend
         self.ffmpeg_capture_options = ffmpeg_capture_options
-        self.cap = open_video_capture(
-            source,
-            backend=backend,
-            replay_loop=replay_loop,
-            open_timeout_ms=open_timeout_ms,
-            read_timeout_ms=read_timeout_ms,
-            ffmpeg_capture_options=ffmpeg_capture_options,
-            width=width,
-            height=height,
-            fps=fps,
-            ffmpeg_path=ffmpeg_path,
-        )
-        self._configure_capture(width=width, height=height, fps=fps, fourcc=fourcc)
+        self._capture_options = {
+            "backend": backend,
+            "replay_loop": replay_loop,
+            "open_timeout_ms": open_timeout_ms,
+            "read_timeout_ms": read_timeout_ms,
+            "ffmpeg_capture_options": ffmpeg_capture_options,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "ffmpeg_path": ffmpeg_path,
+        }
+        self._capture_configuration = {
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "fourcc": fourcc,
+        }
+        self.cap = self._open_capture()
         self._fps_tracker = FpsTracker()
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -685,21 +696,46 @@ class LatestFrameCamera:
         self._frame_read_ok = False
         self._read_latency_ms = 0.0
         self._read_failures = 0
+        self._capture_opened = bool(self.cap.isOpened())
+        self._reconnect_attempts = 0
+        self._reconnect_enabled = backend != "replay-video"
+        self._reconnect_after_failures = 3
+        self._reconnect_initial_delay = 0.25
+        self._reconnect_max_delay = 3.0
 
     def actual_properties(self) -> dict[str, object]:
+        with self._lock:
+            cap = self.cap
+            opened = self._capture_opened
+            reconnect_attempts = self._reconnect_attempts
+        try:
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            fps = round(float(cap.get(cv2.CAP_PROP_FPS) or 0.0), 3)
+            fourcc = fourcc_to_text(int(cap.get(cv2.CAP_PROP_FOURCC) or 0))
+        except Exception:
+            width = height = 0
+            fps = 0.0
+            fourcc = ""
         properties = {
             "source": redact_camera_source(str(self.source)),
             "backend": self.backend,
             "ffmpeg_capture_options": self.ffmpeg_capture_options or "",
-            "width": int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
-            "height": int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
-            "fps": round(float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0), 3),
-            "fourcc": fourcc_to_text(int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)),
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "fourcc": fourcc,
+            "capture_state": "available" if opened else "reconnecting",
+            "reconnect_attempts": reconnect_attempts,
         }
-        metadata = getattr(self.cap, "metadata", None)
+        metadata = getattr(cap, "metadata", None)
         if callable(metadata):
             properties.update(metadata())
         return properties
+
+    def is_opened(self) -> bool:
+        with self._lock:
+            return self._capture_opened
 
     def start(self) -> None:
         if not self.cap.isOpened():
@@ -715,10 +751,12 @@ class LatestFrameCamera:
 
     def stop(self) -> None:
         self._stop_event.set()
+        # Releasing first also unblocks an FFmpeg pipe read after a device loss.
+        with contextlib.suppress(Exception):
+            self.cap.release()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=3)
         self._thread = None
-        self.cap.release()
 
     def snapshot(self, *, copy_frame: bool = True) -> CameraFrameSnapshot:
         with self._lock:
@@ -736,9 +774,13 @@ class LatestFrameCamera:
             )
 
     def _run(self) -> None:
+        consecutive_failures = 0
         while not self._stop_event.is_set():
             read_started = time.monotonic()
-            success, frame = self.cap.read()
+            try:
+                success, frame = self.cap.read()
+            except Exception:
+                success, frame = False, None
             read_latency_ms = (time.monotonic() - read_started) * 1000.0
             stamp = time.time()
             now = time.monotonic()
@@ -746,36 +788,89 @@ class LatestFrameCamera:
                 self._frame_read_ok = bool(success)
                 self._read_latency_ms = read_latency_ms
                 if success:
+                    consecutive_failures = 0
+                    self._capture_opened = True
                     self._stamp = stamp
                     self._frame_number += 1
                     self._frame = frame
                     self._fps = self._fps_tracker.update(now)
                 else:
+                    consecutive_failures += 1
                     self._read_failures += 1
+
+                    if (
+                        self._reconnect_enabled
+                        and consecutive_failures >= self._reconnect_after_failures
+                    ):
+                        self._capture_opened = False
+                        self._frame = None
 
             if success:
                 if self.interval > 0:
                     time.sleep(self.interval)
+            elif (
+                self._reconnect_enabled
+                and consecutive_failures >= self._reconnect_after_failures
+            ):
+                if not self._reconnect_until_open():
+                    return
+                consecutive_failures = 0
             else:
-                time.sleep(0.05)
+                self._stop_event.wait(0.05)
+
+    def _open_capture(self):
+        cap = open_video_capture(self.source, **self._capture_options)
+        self._configure_capture(cap, **self._capture_configuration)
+        return cap
+
+    def _reconnect_until_open(self) -> bool:
+        with contextlib.suppress(Exception):
+            self.cap.release()
+
+        delay = self._reconnect_initial_delay
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(delay):
+                return False
+            with self._lock:
+                self._reconnect_attempts += 1
+            candidate = None
+            try:
+                candidate = self._open_capture()
+                if candidate.isOpened():
+                    if self._stop_event.is_set():
+                        candidate.release()
+                        return False
+                    with self._lock:
+                        self.cap = candidate
+                        self._capture_opened = True
+                        self._frame_read_ok = False
+                    return True
+            except Exception:
+                pass
+            if candidate is not None:
+                with contextlib.suppress(Exception):
+                    candidate.release()
+            delay = min(max(delay * 2.0, 0.05), self._reconnect_max_delay)
+        return False
 
     def _configure_capture(
         self,
+        cap,
         *,
         width: int | None,
         height: int | None,
         fps: float | None,
         fourcc: str | None,
     ) -> None:
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if fourcc:
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
         if width is not None:
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         if height is not None:
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if fps is not None:
-            self.cap.set(cv2.CAP_PROP_FPS, fps)
+            cap.set(cv2.CAP_PROP_FPS, fps)
 
 
 class SwordSignInferenceRunner:
@@ -1035,6 +1130,7 @@ async def publish_status_loop(
                     frame_number=snapshot.frame_number,
                     fps=snapshot.fps,
                     frame_read_ok=snapshot.frame_read_ok,
+                    camera_opened=camera.is_opened(),
                     capture=capture_status_properties(camera, snapshot),
                     camera_source=(
                         args.replay_video

@@ -79,6 +79,9 @@ class ManagedProcess:
     log_file: Path
     started_at: str
     critical: bool = True
+    restartable: bool = False
+    command: tuple[str, ...] = ()
+    stdin: int | None = subprocess.DEVNULL
 
     def is_running(self) -> bool:
         return self.process.poll() is None
@@ -109,6 +112,7 @@ class StackSupervisor:
         self.ready_detail = "starting"
         self._stopping = False
         self._lock = threading.Lock()
+        self._restart_attempts: dict[str, int] = {}
 
     def run(self) -> int:
         mediamtx = resolve_tool(
@@ -150,6 +154,7 @@ class StackSupervisor:
                 rtsp_url=self.args.rtsp_url,
             ),
             stdin=subprocess.PIPE,
+            restartable=True,
         )
 
         if not self.args.skip_rtsp_wait:
@@ -310,6 +315,8 @@ class StackSupervisor:
         *,
         stdin: int | None = subprocess.DEVNULL,
         critical: bool = True,
+        restartable: bool = False,
+        register: bool = True,
     ) -> ManagedProcess:
         log_file = self.log_dir / f"{name}.log"
         log_handle = log_file.open("a", encoding="utf-8", errors="replace")
@@ -341,8 +348,12 @@ class StackSupervisor:
             log_file=log_file,
             started_at=datetime.now(timezone.utc).isoformat(),
             critical=critical,
+            restartable=restartable,
+            command=tuple(command),
+            stdin=stdin,
         )
-        self.processes.append(managed)
+        if register:
+            self.processes.append(managed)
         self._write_process_manifest()
         thread = threading.Thread(
             target=stream_output,
@@ -365,7 +376,10 @@ class StackSupervisor:
 
     def _monitor(self) -> int:
         while not self._stopping:
-            for managed in self.processes:
+            for managed in list(self.processes):
+                if managed.restartable and not managed.is_running():
+                    self._restart_process(managed)
+                    continue
                 if managed.critical and not managed.is_running():
                     print(
                         f"{managed.name} exited with code {managed.process.returncode}. "
@@ -374,8 +388,84 @@ class StackSupervisor:
                     self._write_process_manifest()
                     self.stop()
                     return int(managed.process.returncode or 1)
+            if not self.ready:
+                self._refresh_camera_recovery()
             time.sleep(0.5)
         return 0
+
+    def _restart_process(self, managed: ManagedProcess) -> bool:
+        attempts = self._restart_attempts.get(managed.name, 0) + 1
+        self._restart_attempts[managed.name] = attempts
+        initial = self.args.camera_restart_initial_delay
+        maximum = self.args.camera_restart_max_delay
+        delay = min(initial * (2 ** min(attempts - 1, 6)), maximum)
+
+        self.ready = False
+        self.ready_detail = "camera input unavailable; reconnecting"
+        self._write_process_manifest()
+        print(
+            f"{managed.name} exited with code {managed.process.returncode}; "
+            f"camera-only degraded, retrying in {delay:.2f}s."
+        )
+        if self._stopping:
+            return False
+        time.sleep(delay)
+        if self._stopping:
+            return False
+
+        try:
+            replacement = self._start(
+                managed.name,
+                list(managed.command),
+                stdin=managed.stdin,
+                critical=managed.critical,
+                restartable=True,
+                register=False,
+            )
+        except Exception:
+            self.ready_detail = "camera input unavailable; reconnect failed"
+            self._write_process_manifest()
+            return False
+
+        try:
+            index = self.processes.index(managed)
+        except ValueError:
+            replacement.process.terminate()
+            return False
+        self.processes[index] = replacement
+        self.ready_detail = "camera input reconnecting; awaiting fresh frame topics"
+        self._write_process_manifest()
+        return True
+
+    def _refresh_camera_recovery(self) -> bool:
+        publisher = next(
+            (
+                managed
+                for managed in self.processes
+                if managed.restartable and managed.is_running()
+            ),
+            None,
+        )
+        if publisher is None:
+            return False
+        try:
+            observed = asyncio.run(
+                probe_camera_hub_topics_once(
+                    f"ws://{connect_host(self.args.hub_host)}:{self.args.hub_port}",
+                    0.4,
+                )
+            )
+        except Exception:
+            return False
+        if not REQUIRED_READY_TOPICS.issubset(observed):
+            return False
+        self.ready = True
+        self.ready_at = datetime.now(timezone.utc).isoformat()
+        self.ready_detail = "camera input recovered; fresh frame topics observed"
+        self._restart_attempts.pop(publisher.name, None)
+        self._write_process_manifest()
+        print("Camera input recovered; fresh Camera Hub topics observed.")
+        return True
 
     def _wait_until(self, deadline: float) -> None:
         while time.monotonic() < deadline:
@@ -491,6 +581,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--viewer-allow-remote", action="store_true")
     parser.add_argument("--no-viewer-server", action="store_true")
     parser.add_argument("--graceful-timeout", type=parse_positive_float, default=8.0)
+    parser.add_argument(
+        "--camera-restart-initial-delay",
+        type=parse_positive_float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--camera-restart-max-delay",
+        type=parse_positive_float,
+        default=5.0,
+    )
     parser.add_argument("--skip-rtsp-wait", action="store_true")
     parser.add_argument("--force-stop-existing", action="store_true")
     parser.add_argument("--no-browser", action="store_true")

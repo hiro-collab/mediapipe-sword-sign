@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr
 from pathlib import Path
 
@@ -151,6 +152,119 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertFalse(args.no_viewer_server)
         self.assertFalse(args.force_stop_existing)
         self.assertFalse(args.no_browser)
+        self.assertEqual(args.camera_restart_initial_delay, 0.5)
+        self.assertEqual(args.camera_restart_max_delay, 5.0)
+
+    def test_camera_publisher_exit_restarts_without_stopping_camera_stack(self):
+        failed_process = mock.Mock()
+        failed_process.poll.return_value = 1
+        failed_process.returncode = 1
+        managed = stack.ManagedProcess(
+            name="ffmpeg-cam0",
+            process=failed_process,
+            log_file=Path("failed.log"),
+            started_at="2026-07-14T00:00:00+00:00",
+            restartable=True,
+            command=("ffmpeg", "-f", "dshow"),
+            stdin=stack.subprocess.PIPE,
+        )
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.processes = [managed]
+        supervisor._stopping = False
+        supervisor.ready = True
+        supervisor.stop = mock.Mock()
+
+        def restart_once(item):
+            self.assertIs(item, managed)
+            supervisor._stopping = True
+            return True
+
+        supervisor._restart_process = mock.Mock(side_effect=restart_once)
+        supervisor._refresh_camera_recovery = mock.Mock()
+        with mock.patch.object(stack.time, "sleep"):
+            result = supervisor._monitor()
+
+        self.assertEqual(result, 0)
+        supervisor._restart_process.assert_called_once_with(managed)
+        supervisor.stop.assert_not_called()
+
+    def test_restart_replaces_only_camera_publisher_and_marks_degraded(self):
+        failed_process = mock.Mock()
+        failed_process.returncode = 1
+        managed = stack.ManagedProcess(
+            name="ffmpeg-cam0",
+            process=failed_process,
+            log_file=Path("failed.log"),
+            started_at="2026-07-14T00:00:00+00:00",
+            restartable=True,
+            command=("ffmpeg", "-f", "dshow"),
+            stdin=stack.subprocess.PIPE,
+        )
+        replacement = mock.Mock()
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.args = mock.Mock(
+            camera_restart_initial_delay=0.5,
+            camera_restart_max_delay=5.0,
+        )
+        supervisor.processes = [managed]
+        supervisor._stopping = False
+        supervisor._restart_attempts = {}
+        supervisor.ready = True
+        supervisor.ready_detail = "ready"
+        supervisor._write_process_manifest = mock.Mock()
+        supervisor._start = mock.Mock(return_value=replacement)
+
+        with mock.patch.object(stack.time, "sleep") as sleep:
+            restarted = supervisor._restart_process(managed)
+
+        self.assertTrue(restarted)
+        self.assertIs(supervisor.processes[0], replacement)
+        self.assertFalse(supervisor.ready)
+        self.assertIn("awaiting fresh frame", supervisor.ready_detail)
+        sleep.assert_called_once_with(0.5)
+        supervisor._start.assert_called_once_with(
+            "ffmpeg-cam0",
+            ["ffmpeg", "-f", "dshow"],
+            stdin=stack.subprocess.PIPE,
+            critical=True,
+            restartable=True,
+            register=False,
+        )
+
+    def test_recovery_requires_fresh_camera_and_gesture_topics(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        publisher = stack.ManagedProcess(
+            name="ffmpeg-cam0",
+            process=process,
+            log_file=Path("publisher.log"),
+            started_at="2026-07-14T00:00:00+00:00",
+            restartable=True,
+        )
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.args = mock.Mock(hub_host="127.0.0.1", hub_port=8765)
+        supervisor.processes = [publisher]
+        supervisor.ready = False
+        supervisor.ready_at = ""
+        supervisor.ready_detail = "reconnecting"
+        supervisor._restart_attempts = {"ffmpeg-cam0": 2}
+        supervisor._write_process_manifest = mock.Mock()
+
+        async def fresh_topics(_url, _wait_seconds):
+            return set(stack.REQUIRED_READY_TOPICS)
+
+        with mock.patch.object(
+            stack,
+            "probe_camera_hub_topics_once",
+            side_effect=fresh_topics,
+        ):
+            recovered = supervisor._refresh_camera_recovery()
+
+        self.assertTrue(recovered)
+        self.assertTrue(supervisor.ready)
+        self.assertIn("fresh frame", supervisor.ready_detail)
+        self.assertNotIn("ffmpeg-cam0", supervisor._restart_attempts)
+        supervisor._write_process_manifest.assert_called_once()
 
     def test_process_manifest_path_uses_home_control_state_dir(self):
         original = os.environ.get("HOME_CONTROL_STACK_STATE_DIR")
