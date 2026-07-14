@@ -57,12 +57,22 @@ The query parameters are the same as the direct file URL. The HTTP viewer server
 only serves static HTML; it does not own camera capture, inference, or video
 distribution.
 
-## OpenCV RTSP Fallback
+## FFmpeg Pipe Compatibility Diagnostic
 
 `--camera-backend ffmpeg` uses OpenCV's FFmpeg-backed `VideoCapture`.
-It is retained for comparison and fallback.
+It is the current canonical MediaMTX RTSP reader and uses bounded open/read
+timeouts.
 
-Use `--camera-backend ffmpeg-pipe` for MediaMTX RTSP input unless a local environment cannot run FFmpeg pipe.
+`--camera-backend ffmpeg-pipe` is compatibility-required only for the explicit
+maintainer blocking/latency diagnostic route from `scripts/camera_hub_stack.py
+--hub-camera-backend ffmpeg-pipe` to `apps/serve_camera_hub.py
+--camera-backend ffmpeg-pipe`. It must not be presented as a second canonical
+reader. Remove the compatibility flag only after all operator and documentation
+consumers and explicit first-party invocations have migrated, repository search
+plus consumer/test inventory prove that no current or named external consumer
+remains, and canonical bounded open/read/disconnect/reconnect/cleanup proof is
+green. A pipe-read rewrite alone is not deletion proof.
+
 If OpenCV rejects capture options, use:
 
 ```powershell

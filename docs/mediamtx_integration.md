@@ -6,14 +6,14 @@ gesture/status/landmarks topic だけを WebSocket で配信します。
 ```text
 USB camera -> FFmpeg publish -> MediaMTX /cam0 -> Browser video
                                       |
-                                      +-> RTSP -> Camera Hub ffmpeg-pipe -> topics
+                                      +-> RTSP -> Camera Hub bounded OpenCV ffmpeg -> topics
 ```
 
 ## Responsibility Boundary
 
 - MediaMTX: WebRTC/HLS/RTSP の映像配信。
 - FFmpeg: Windows USB camera を DirectShow で開き、MediaMTX に publish。
-- Camera Hub: RTSP を `ffmpeg-pipe` で読み、MediaPipe 推論と topic 配信を実行。
+- Camera Hub: RTSP を bounded OpenCV `ffmpeg` reader で読み、MediaPipe 推論と topic 配信を実行。
 - Browser GUI: MediaMTX の映像と Camera Hub topic を表示。
 
 Python からブラウザへ JPEG を配る構成は検証用です。複数クライアントや複数カメラの導線では使いません。
@@ -41,7 +41,7 @@ scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
 
 - MediaMTX
 - FFmpeg publish to `rtsp://127.0.0.1:8554/cam0`
-- Camera Hub with `--camera-backend ffmpeg-pipe`
+- Camera Hub with `--camera-backend ffmpeg`
 - Browser Monitor static viewer server on `http://127.0.0.1:8770`
 
 起動時に以下の URL が terminal に表示されます。
@@ -129,7 +129,7 @@ uv run python apps/serve_camera_hub.py `
   --port 8765 `
   --interval 0 `
   --camera-source rtsp://127.0.0.1:8554/cam0 `
-  --camera-backend ffmpeg-pipe `
+  --camera-backend ffmpeg `
   --camera-width 640 `
   --camera-height 480 `
   --camera-fps 30 `
@@ -159,8 +159,8 @@ Query parameter の意味:
 - `wsUrl`: Camera Hub topic WebSocket URL。
 - `target`: UI で強調表示する gesture 名。
 
-`ffmpeg-pipe` は FFmpeg subprocess から raw BGR frame を受け取る backend です。
-OpenCV RTSP reader の内部 buffering で landmarks が映像より遅れる場合を避けるために使います。
+`ffmpeg` は OpenCV の FFmpeg-backed `VideoCapture` に bounded open/read timeout を設定する現在の canonical reader です。
+`ffmpeg-pipe` は明示的な maintainer blocking/latency diagnostic route だけに残す compatibility backend で、通常起動の既定値ではありません。
 
 ## Persistent Config
 
@@ -180,8 +180,8 @@ mediamtx mediamtx.yml
 複数 camera で gesture 認識が必要な場合は、camera ごとに MediaMTX path と Camera Hub port を分けます。
 
 ```powershell
-uv run python apps/serve_camera_hub.py --port 8765 --interval 0 --camera-source rtsp://127.0.0.1:8554/cam0 --camera-backend ffmpeg-pipe --camera-width 640 --camera-height 480 --camera-fps 30 --frame-id cam0 --publish-jpeg-every 0 --gesture-every 0.1
-uv run python apps/serve_camera_hub.py --port 8766 --interval 0 --camera-source rtsp://127.0.0.1:8554/cam1 --camera-backend ffmpeg-pipe --camera-width 640 --camera-height 480 --camera-fps 30 --frame-id cam1 --publish-jpeg-every 0 --gesture-every 0.1
+uv run python apps/serve_camera_hub.py --port 8765 --interval 0 --camera-source rtsp://127.0.0.1:8554/cam0 --camera-backend ffmpeg --camera-width 640 --camera-height 480 --camera-fps 30 --frame-id cam0 --publish-jpeg-every 0 --gesture-every 0.1
+uv run python apps/serve_camera_hub.py --port 8766 --interval 0 --camera-source rtsp://127.0.0.1:8554/cam1 --camera-backend ffmpeg --camera-width 640 --camera-height 480 --camera-fps 30 --frame-id cam1 --publish-jpeg-every 0 --gesture-every 0.1
 ```
 
 多数 camera を常用する場合は、複数 worker を束ねる vision service を統合側で設計します。
@@ -195,10 +195,11 @@ uv run python apps/serve_camera_hub.py --port 8766 --interval 0 --camera-source 
 - FFmpeg publish が `/cam0` へ到達していない。
 - DirectShow camera 名が一致していない。
 - `ffprobe rtsp://127.0.0.1:8554/cam0` が失敗している。
-- OpenCV RTSP fallback を使っていて buffering または option rejection が起きている。
+- OpenCV FFmpeg reader で buffering または option rejection が起きている。
 
-OpenCV RTSP fallback を比較する場合だけ `--camera-backend ffmpeg` を使います。
+現在の canonical reader は `--camera-backend ffmpeg` です。
 OpenCV が option を拒否する場合は `--opencv-ffmpeg-capture-options none` で切り分けます。
+`--camera-backend ffmpeg-pipe` は明示的な maintainer blocking/latency diagnostic にだけ使用します。
 
 ## References
 

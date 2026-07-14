@@ -26,7 +26,8 @@ It is not a change log and does not describe experiment history.
 ## Integration Requirements
 
 - Browser video must come from MediaMTX WebRTC/HLS in the normal stack.
-- Camera Hub must read MediaMTX RTSP through `--camera-backend ffmpeg-pipe` for low-latency overlay alignment.
+- Camera Hub must read MediaMTX RTSP through the bounded OpenCV `--camera-backend ffmpeg` route.
+- `ffmpeg-pipe` is compatibility-required only for the explicit maintainer blocking/latency diagnostic route. It is not a second canonical reader.
 - Integrated Browser Monitor URLs should use the HTTP viewer server, not a `file://` URL.
 - Python JPEG topic must stay disabled with `--publish-jpeg-every 0` unless testing Python image transport.
 - JPEG Debug Preview is a diagnostic view for Python image transport. Do not

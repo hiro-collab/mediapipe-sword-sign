@@ -143,7 +143,7 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertEqual(args.publish_jpeg_every, 0.0)
         self.assertEqual(args.capture_interval, 0.0)
         self.assertEqual(args.gop, 30)
-        self.assertEqual(args.hub_camera_backend, "ffmpeg-pipe")
+        self.assertEqual(args.hub_camera_backend, "ffmpeg")
         self.assertEqual(args.camera_open_timeout_ms, 5000)
         self.assertEqual(args.camera_read_timeout_ms, 3000)
         self.assertEqual(args.max_clients, 8)

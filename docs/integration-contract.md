@@ -7,7 +7,7 @@ README, changelog entries, and archived planning notes should point here when th
 
 ```text
 FFmpeg -> MediaMTX /cam0 -> Browser video
-MediaMTX RTSP /cam0 -> Camera Hub ffmpeg-pipe -> WebSocket topics
+MediaMTX RTSP /cam0 -> Camera Hub bounded OpenCV ffmpeg -> WebSocket topics
 ```
 
 Default local endpoints:
@@ -119,7 +119,7 @@ rest      JPEG bytes
 
 ## Camera Hub Command
 
-The MediaMTX route should start Camera Hub with RTSP input, `ffmpeg-pipe`, and disabled Python JPEG publishing:
+The MediaMTX route should start Camera Hub with RTSP input, bounded OpenCV `ffmpeg`, and disabled Python JPEG publishing:
 
 ```powershell
 uv run python apps/serve_camera_hub.py `
@@ -127,7 +127,7 @@ uv run python apps/serve_camera_hub.py `
   --port 8765 `
   --interval 0 `
   --camera-source rtsp://127.0.0.1:8554/cam0 `
-  --camera-backend ffmpeg-pipe `
+  --camera-backend ffmpeg `
   --camera-width 640 `
   --camera-height 480 `
   --camera-fps 30 `

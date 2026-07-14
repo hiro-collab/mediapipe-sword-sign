@@ -41,7 +41,7 @@ FFmpeg / MediaMTX のパスを設定します。
 ## Primary Integration Route
 
 通常の統合導線は **FFmpeg publish + MediaMTX video + Camera Hub topic** です。
-Camera Hub は MediaMTX の RTSP stream を `ffmpeg-pipe` backend で読み、Python からの
+Camera Hub は MediaMTX の RTSP stream を bounded OpenCV `ffmpeg` backend で読み、Python からの
 JPEG 映像配信は無効にします。
 
 ```text
@@ -62,7 +62,7 @@ uv run python apps/serve_camera_hub.py `
   --port 8765 `
   --interval 0 `
   --camera-source rtsp://127.0.0.1:8554/cam0 `
-  --camera-backend ffmpeg-pipe `
+  --camera-backend ffmpeg `
   --camera-width 640 `
   --camera-height 480 `
   --camera-fps 30 `
@@ -138,7 +138,7 @@ print(state.to_json())
 `http://127.0.0.1:8770/browser_camera_hub_viewer.html?mediaUrl=...&wsUrl=...`
 を開きます。`file://` で HTML を直接開く導線は単体デバッグ用です。
 
-`publish_udp.py`、`serve_websocket.py`、Python JPEG topic、OpenCV RTSP fallback は通常導線ではありません。
+`publish_udp.py`、`serve_websocket.py`、Python JPEG topic、`ffmpeg-pipe` RTSP compatibility diagnostic は通常導線ではありません。
 互換・検証・切り分け用途は [Retired And Compatibility Paths](docs/retired-paths.md) にまとめています。
 
 ### Local video training-row extraction
@@ -192,6 +192,6 @@ label、件数、生成ファイル名などの summary だけです。生成 CS
 - [Module Responsibilities](docs/module-responsibilities.md): 要求仕様と責務境界。
 - [Integration Contract](docs/integration-contract.md): topic envelope、payload、auth/origin。
 - [Browser GUI Integration](docs/browser_gui_integration.md): Browser Monitor の接続と確認観点。
-- [MediaMTX Integration](docs/mediamtx_integration.md): FFmpeg publish、MediaMTX、`ffmpeg-pipe` の手順。
+- [MediaMTX Integration](docs/mediamtx_integration.md): FFmpeg publish、MediaMTX、bounded OpenCV `ffmpeg` reader の手順。
 - [Retired And Compatibility Paths](docs/retired-paths.md): 互換アダプタ、検証用導線、archive の扱い。
 - [Changelog](CHANGELOG.md): 日付つきの変更要約。

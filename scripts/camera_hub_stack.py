@@ -547,10 +547,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hub-camera-backend",
         choices=["ffmpeg", "ffmpeg-pipe"],
-        default="ffmpeg-pipe",
+        default="ffmpeg",
         help=(
-            "Camera Hub RTSP reader backend. ffmpeg-pipe avoids OpenCV RTSP "
-            "buffering by reading raw BGR frames from ffmpeg."
+            "Camera Hub RTSP reader backend. ffmpeg is the canonical runtime "
+            "path and uses bounded OpenCV open/read timeouts. ffmpeg-pipe is "
+            "retained only for explicit maintainer blocking/latency diagnostics; "
+            "see docs/retired-paths.md for its removal gate."
         ),
     )
     parser.add_argument(

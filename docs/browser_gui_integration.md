@@ -107,7 +107,7 @@ uv run python apps/camera_hub_gui.py
 | --- | --- |
 | Video pane is empty | MediaMTX 起動、FFmpeg publish、`ffprobe rtsp://127.0.0.1:8554/cam0` |
 | State pane is disconnected | Camera Hub process、`ws://127.0.0.1:8765`、token/origin |
-| Overlay trails video | Camera Hub が `--camera-backend ffmpeg-pipe` で RTSP を読んでいるか |
+| Overlay trails video | Camera Hub が canonical `--camera-backend ffmpeg` と bounded read timeout で RTSP を読んでいるか |
 | Stable release feels slow | `--release-grace-seconds` と hold 設定 |
 
 Browser 実装の詳細コード例は通常導線から外しました。必要な wire format は

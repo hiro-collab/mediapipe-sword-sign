@@ -1011,8 +1011,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_camera_backend,
         default="auto",
         help=(
-            "Camera backend. Use ffmpeg-pipe for low-latency RTSP sources, "
-            "or ffmpeg to use OpenCV's FFmpeg VideoCapture."
+            "Camera backend. Use canonical ffmpeg for bounded OpenCV FFmpeg "
+            "VideoCapture. ffmpeg-pipe is retained only for explicit "
+            "maintainer blocking/latency diagnostics."
         ),
     )
     parser.add_argument(
