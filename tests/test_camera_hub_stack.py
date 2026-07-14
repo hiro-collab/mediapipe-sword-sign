@@ -175,13 +175,16 @@ class CameraHubStackTests(unittest.TestCase):
     def test_parser_defaults_to_one_terminal_browser_debug_stack(self):
         args = stack.build_parser().parse_args([])
 
-        self.assertEqual(args.camera_name, "HD Pro Webcam C920")
+        self.assertEqual(args.camera_name, "Logitech StreamCam")
+        self.assertEqual(args.width, 1920)
+        self.assertEqual(args.height, 1080)
+        self.assertEqual(args.fps, 30)
         self.assertEqual(args.frame_id, stack.DEFAULT_MEDIAMTX_PATH)
         self.assertEqual(args.rtsp_url, stack.mediamtx_rtsp_url())
         self.assertEqual(args.publish_jpeg_every, 0.0)
         self.assertEqual(args.capture_interval, 0.0)
         self.assertEqual(args.gop, 30)
-        self.assertEqual(args.ffmpeg_input_codec, "auto")
+        self.assertEqual(args.ffmpeg_input_codec, "mjpeg")
         self.assertEqual(args.hub_camera_backend, "ffmpeg")
         self.assertEqual(args.camera_open_timeout_ms, 5000)
         self.assertEqual(args.camera_read_timeout_ms, 3000)
@@ -193,6 +196,27 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertFalse(args.no_browser)
         self.assertEqual(args.camera_restart_initial_delay, 0.5)
         self.assertEqual(args.camera_restart_max_delay, 5.0)
+
+    def test_default_capture_request_flows_into_ffmpeg_argv(self):
+        defaults = stack.build_parser().parse_args([])
+
+        args = stack.build_ffmpeg_args(
+            ffmpeg="ffmpeg",
+            ffmpeg_video_source=defaults.ffmpeg_video_source,
+            ffmpeg_input_codec=defaults.ffmpeg_input_codec,
+            camera_name=defaults.camera_name,
+            width=defaults.width,
+            height=defaults.height,
+            fps=defaults.fps,
+            bitrate=defaults.bitrate,
+            gop=defaults.gop,
+            rtsp_url=defaults.rtsp_url,
+        )
+
+        self.assertEqual(args[args.index("-video_size") + 1], "1920x1080")
+        self.assertEqual(args[args.index("-framerate") + 1], "30")
+        self.assertEqual(args[args.index("-vcodec") + 1], "mjpeg")
+        self.assertIn("video=Logitech StreamCam", args)
 
     def test_camera_publisher_exit_restarts_without_stopping_camera_stack(self):
         failed_process = mock.Mock()
@@ -690,6 +714,10 @@ class CameraHubStackTests(unittest.TestCase):
     def test_parser_rejects_invalid_runtime_numbers(self):
         invalid_args = [
             ["--width", "0"],
+            ["--width", str(stack.MAX_CAMERA_WIDTH + 1)],
+            ["--height", str(stack.MIN_CAMERA_HEIGHT - 1)],
+            ["--height", str(stack.MAX_CAMERA_HEIGHT + 1)],
+            ["--fps", str(stack.MAX_CAMERA_FPS + 1)],
             ["--hub-port", "70000"],
             ["--gesture-model-complexity", "2"],
             ["--release-grace-seconds", "nan"],

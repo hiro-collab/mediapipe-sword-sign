@@ -51,13 +51,15 @@ USB camera -> FFmpeg -> MediaMTX /cam0 -> Browser video
 ```
 
 ```powershell
-scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
+scripts\start_camera_hub_stack.bat
 ```
 
-DirectShow cameras that advertise high-resolution MJPEG modes can opt in with
-`--ffmpeg-input-codec mjpeg`. Keep the default `auto` unless the selected
-device's local capability listing contains the requested resolution and frame
-rate; this selector does not manufacture an unsupported 60 fps mode.
+The current local capture request defaults to Logitech StreamCam at
+`1920x1080`, `30 fps`, and `--ffmpeg-input-codec mjpeg`. These are requested
+settings only: use the device capability listing and runtime diagnostics as the
+authority for the achieved mode. The selector does not manufacture an
+unsupported 60 fps mode. Other cameras may explicitly override the name, size,
+fps, and codec after their local capability listing is checked.
 
 手動で Camera Hub だけを起動する場合:
 

@@ -31,6 +31,12 @@ DEFAULT_MEDIAMTX_RTSP_PORT = 8554
 DEFAULT_MEDIAMTX_HLS_PORT = 8888
 DEFAULT_MEDIAMTX_WEBRTC_PORT = 8889
 DEFAULT_MEDIAMTX_PATH = "cam0"
+MIN_CAMERA_WIDTH = 160
+MAX_CAMERA_WIDTH = 3840
+MIN_CAMERA_HEIGHT = 120
+MAX_CAMERA_HEIGHT = 2160
+MIN_CAMERA_FPS = 1
+MAX_CAMERA_FPS = 120
 MEDIAMTX_PORTS = (
     DEFAULT_MEDIAMTX_RTSP_PORT,
     DEFAULT_MEDIAMTX_HLS_PORT,
@@ -524,12 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Start MediaMTX, FFmpeg camera publish, and Camera Hub in one terminal.",
     )
-    parser.add_argument("--camera-name", default="HD Pro Webcam C920")
+    parser.add_argument("--camera-name", default="Logitech StreamCam")
     parser.add_argument("--frame-id", default=DEFAULT_MEDIAMTX_PATH)
     parser.add_argument("--rtsp-url", default=mediamtx_rtsp_url())
-    parser.add_argument("--width", type=parse_positive_int, default=640)
-    parser.add_argument("--height", type=parse_positive_int, default=480)
-    parser.add_argument("--fps", type=parse_positive_int, default=30)
+    parser.add_argument("--width", type=parse_camera_width, default=1920)
+    parser.add_argument("--height", type=parse_camera_height, default=1080)
+    parser.add_argument("--fps", type=parse_camera_fps, default=30)
     parser.add_argument("--bitrate", default="800k")
     parser.add_argument("--gop", type=parse_positive_int, default=30)
     parser.add_argument(
@@ -541,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ffmpeg-input-codec",
         choices=["auto", "mjpeg"],
-        default="auto",
+        default="mjpeg",
         help=(
             "DirectShow camera input codec. auto preserves the camera default; "
             "use mjpeg only when the selected device advertises the requested "
@@ -623,6 +629,48 @@ def parse_positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than 0")
     return parsed
+
+
+def parse_bounded_camera_int(
+    value: str,
+    *,
+    field: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    parsed = parse_positive_int(value)
+    if parsed < minimum or parsed > maximum:
+        raise argparse.ArgumentTypeError(
+            f"{field} must be between {minimum} and {maximum}"
+        )
+    return parsed
+
+
+def parse_camera_width(value: str) -> int:
+    return parse_bounded_camera_int(
+        value,
+        field="camera width",
+        minimum=MIN_CAMERA_WIDTH,
+        maximum=MAX_CAMERA_WIDTH,
+    )
+
+
+def parse_camera_height(value: str) -> int:
+    return parse_bounded_camera_int(
+        value,
+        field="camera height",
+        minimum=MIN_CAMERA_HEIGHT,
+        maximum=MAX_CAMERA_HEIGHT,
+    )
+
+
+def parse_camera_fps(value: str) -> int:
+    return parse_bounded_camera_int(
+        value,
+        field="camera fps",
+        minimum=MIN_CAMERA_FPS,
+        maximum=MAX_CAMERA_FPS,
+    )
 
 
 def parse_port(value: str) -> int:

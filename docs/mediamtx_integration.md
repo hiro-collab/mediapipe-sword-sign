@@ -34,14 +34,16 @@ Camera Hub の Python 依存だけでは、複数ブラウザへの映像 fan-ou
 ローカル統合確認は stack script を使います。
 
 ```powershell
-scripts\start_camera_hub_stack.bat --camera-name "HD Pro Webcam C920"
+scripts\start_camera_hub_stack.bat
 ```
 
-For a DirectShow camera that explicitly advertises the selected high-resolution
-mode as MJPEG, add `--ffmpeg-input-codec mjpeg`. The default `auto` leaves the
-input codec unspecified. This runtime operator selector only chooses the camera
-transport format; it does not change Camera Hub's gesture/state authority and
-must fail normally when the device does not advertise the requested fps.
+The current local request defaults to Logitech StreamCam at `1920x1080`,
+`30 fps`, and MJPEG input. Requested settings are not achieved-mode proof: the
+device capability listing and runtime Camera Hub diagnostics remain the
+authority. The operator selector only chooses the camera transport request; it
+does not change Camera Hub's gesture/state authority and must fail normally when
+the device does not advertise the requested mode. Use explicit overrides for a
+different camera or for `auto` input-codec selection.
 
 この script は以下を起動します。
 
