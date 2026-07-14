@@ -1,7 +1,10 @@
 import importlib.util
 import io
+import json
 import os
 import sys
+import tempfile
+import threading
 import unittest
 from unittest import mock
 from contextlib import redirect_stderr
@@ -260,6 +263,7 @@ class CameraHubStackTests(unittest.TestCase):
         supervisor.ready = True
         supervisor.ready_at = "prior-ready"
         supervisor.ready_detail = "ready"
+        supervisor.camera_state_class = "ready"
         supervisor._write_process_manifest = mock.Mock()
 
         with mock.patch.object(
@@ -276,6 +280,7 @@ class CameraHubStackTests(unittest.TestCase):
             supervisor.ready_detail,
             "camera input unavailable; reconnecting",
         )
+        self.assertEqual(supervisor.camera_state_class, "unavailable")
         supervisor._write_process_manifest.assert_called_once()
 
     def test_startup_check_allows_restartable_camera_publisher_to_be_down(self):
@@ -305,6 +310,7 @@ class CameraHubStackTests(unittest.TestCase):
         supervisor.ready = True
         supervisor.ready_at = "prior-ready"
         supervisor.ready_detail = "camera input unavailable; reconnecting"
+        supervisor.camera_state_class = "ready"
         supervisor._write_process_manifest = mock.Mock()
 
         with (
@@ -319,6 +325,7 @@ class CameraHubStackTests(unittest.TestCase):
             supervisor.ready_detail,
             "camera input unavailable; reconnecting",
         )
+        self.assertEqual(supervisor.camera_state_class, "unavailable")
         wait_listener.assert_called_once_with(
             8765,
             "127.0.0.1",
@@ -338,6 +345,7 @@ class CameraHubStackTests(unittest.TestCase):
         supervisor.ready = False
         supervisor.ready_at = ""
         supervisor.ready_detail = "starting"
+        supervisor.camera_state_class = "starting"
         supervisor._write_process_manifest = mock.Mock()
 
         with (
@@ -354,6 +362,7 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertTrue(supervisor.ready_at)
         self.assertIn("/camera/status", supervisor.ready_detail)
         self.assertIn("/vision/sword_sign/state", supervisor.ready_detail)
+        self.assertEqual(supervisor.camera_state_class, "ready")
         wait_topics.assert_called_once()
         wait_listener.assert_not_called()
         supervisor._write_process_manifest.assert_called_once()
@@ -380,7 +389,9 @@ class CameraHubStackTests(unittest.TestCase):
         supervisor._stopping = False
         supervisor._restart_attempts = {}
         supervisor.ready = True
+        supervisor.ready_at = "prior-ready"
         supervisor.ready_detail = "ready"
+        supervisor.camera_state_class = "ready"
         supervisor._write_process_manifest = mock.Mock()
         supervisor._start = mock.Mock(return_value=replacement)
 
@@ -390,7 +401,9 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertTrue(restarted)
         self.assertIs(supervisor.processes[0], replacement)
         self.assertFalse(supervisor.ready)
+        self.assertEqual(supervisor.ready_at, "")
         self.assertIn("awaiting fresh frame", supervisor.ready_detail)
+        self.assertEqual(supervisor.camera_state_class, "recovering")
         sleep.assert_called_once_with(0.5)
         supervisor._start.assert_called_once_with(
             "ffmpeg-cam0",
@@ -417,6 +430,7 @@ class CameraHubStackTests(unittest.TestCase):
         supervisor.ready = False
         supervisor.ready_at = ""
         supervisor.ready_detail = "reconnecting"
+        supervisor.camera_state_class = "recovering"
         supervisor._restart_attempts = {"ffmpeg-cam0": 2}
         supervisor._write_process_manifest = mock.Mock()
 
@@ -433,8 +447,96 @@ class CameraHubStackTests(unittest.TestCase):
         self.assertTrue(recovered)
         self.assertTrue(supervisor.ready)
         self.assertIn("fresh frame", supervisor.ready_detail)
+        self.assertEqual(supervisor.camera_state_class, "ready")
         self.assertNotIn("ffmpeg-cam0", supervisor._restart_attempts)
         supervisor._write_process_manifest.assert_called_once()
+
+    def test_process_manifest_emits_fixed_camera_state_class(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.processes = []
+        supervisor.ready = False
+        supervisor.ready_at = ""
+        supervisor.ready_detail = "camera input unavailable; reconnecting"
+        supervisor.camera_state_class = "unavailable"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "processes.json"
+            supervisor.process_manifest_path = path
+
+            supervisor._write_process_manifest()
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["camera_state_class"], "unavailable")
+        self.assertFalse(payload["ready"])
+
+    def test_process_manifest_rejects_ready_class_mismatch(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.processes = []
+        supervisor.ready = True
+        supervisor.ready_at = "now"
+        supervisor.ready_detail = "ready"
+        supervisor.camera_state_class = "recovering"
+        supervisor.process_manifest_path = Path("unused.json")
+
+        with self.assertRaisesRegex(RuntimeError, "does not match"):
+            supervisor._write_process_manifest()
+
+    def test_process_manifest_rejects_invalid_camera_state_class(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.processes = []
+        supervisor.ready = False
+        supervisor.ready_at = ""
+        supervisor.ready_detail = "unknown"
+        supervisor.camera_state_class = "private-camera-detail"
+        supervisor.process_manifest_path = Path("unused.json")
+
+        with self.assertRaisesRegex(RuntimeError, "invalid camera state class"):
+            supervisor._write_process_manifest()
+
+    def test_process_manifest_rejects_stale_or_missing_ready_at(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.processes = []
+        supervisor.ready_detail = "state"
+        supervisor.process_manifest_path = Path("unused.json")
+        cases = (
+            (False, "prior-ready", "unavailable"),
+            (True, "", "ready"),
+        )
+        for ready, ready_at, state_class in cases:
+            with self.subTest(ready=ready, state_class=state_class):
+                supervisor.ready = ready
+                supervisor.ready_at = ready_at
+                supervisor.camera_state_class = state_class
+                with self.assertRaisesRegex(RuntimeError, "ready_at"):
+                    supervisor._write_process_manifest()
+
+    def test_stop_publishes_stopping_before_waiting_for_children(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor._lock = threading.Lock()
+        supervisor._stopping = False
+        supervisor.processes = []
+        supervisor.args = mock.Mock(graceful_timeout=0.1)
+        supervisor.ready = True
+        supervisor.ready_at = "prior-ready"
+        supervisor.ready_detail = "ready"
+        supervisor.camera_state_class = "ready"
+        writes = []
+        supervisor._write_process_manifest = mock.Mock(
+            side_effect=lambda: writes.append(
+                (
+                    supervisor.ready,
+                    supervisor.ready_at,
+                    supervisor.camera_state_class,
+                )
+            )
+        )
+        supervisor._wait_until = mock.Mock()
+
+        supervisor.stop()
+
+        self.assertEqual(writes[0], (False, "", "stopping"))
+        self.assertEqual(supervisor._write_process_manifest.call_count, 2)
 
     def test_process_manifest_path_uses_home_control_state_dir(self):
         original = os.environ.get("HOME_CONTROL_STACK_STATE_DIR")

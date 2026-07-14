@@ -61,6 +61,9 @@ STACK_PROCESS_CONTROLLER_NAMES = {
 CAMERA_STATUS_TOPIC = "/camera/status"
 SWORD_SIGN_STATE_TOPIC = "/vision/sword_sign/state"
 REQUIRED_READY_TOPICS = frozenset({CAMERA_STATUS_TOPIC, SWORD_SIGN_STATE_TOPIC})
+CAMERA_STATE_CLASSES = frozenset(
+    {"starting", "unavailable", "recovering", "ready", "stopping"}
+)
 EXTERNAL_PROCESS_DENYLIST = {
     "chrome",
     "msedge",
@@ -116,6 +119,7 @@ class StackSupervisor:
         self.ready = False
         self.ready_at = ""
         self.ready_detail = "starting"
+        self.camera_state_class = "starting"
         self._stopping = False
         self._lock = threading.Lock()
         self._restart_attempts: dict[str, int] = {}
@@ -277,7 +281,10 @@ class StackSupervisor:
         print()
         print("Stopping Camera Hub stack...")
         self.ready = False
+        self.ready_at = ""
         self.ready_detail = "stopping"
+        self.camera_state_class = "stopping"
+        self._write_process_manifest()
 
         for managed in reversed(self.processes):
             if managed.is_running() and managed.name.startswith("ffmpeg"):
@@ -384,6 +391,7 @@ class StackSupervisor:
             self.ready = False
             self.ready_at = ""
             self.ready_detail = "camera input unavailable; reconnecting"
+            self.camera_state_class = "unavailable"
             self._write_process_manifest()
             print("Camera input unavailable at startup; continuing degraded.")
             return False
@@ -403,6 +411,7 @@ class StackSupervisor:
             self.ready = True
             self.ready_at = datetime.now(timezone.utc).isoformat()
             self.ready_detail = "received " + ", ".join(sorted(observed_topics))
+            self.camera_state_class = "ready"
         else:
             wait_for_websocket(
                 self.args.hub_port,
@@ -412,6 +421,7 @@ class StackSupervisor:
             )
             self.ready = False
             self.ready_at = ""
+            self.camera_state_class = "unavailable"
         self._write_process_manifest()
 
     def _monitor(self) -> int:
@@ -421,6 +431,10 @@ class StackSupervisor:
                     self._restart_process(managed)
                     continue
                 if managed.critical and not managed.is_running():
+                    self.ready = False
+                    self.ready_at = ""
+                    self.ready_detail = "camera service unavailable"
+                    self.camera_state_class = "unavailable"
                     print(
                         f"{managed.name} exited with code {managed.process.returncode}. "
                         f"Stopping the rest of the stack."
@@ -441,7 +455,9 @@ class StackSupervisor:
         delay = min(initial * (2 ** min(attempts - 1, 6)), maximum)
 
         self.ready = False
+        self.ready_at = ""
         self.ready_detail = "camera input unavailable; reconnecting"
+        self.camera_state_class = "unavailable"
         self._write_process_manifest()
         print(
             f"{managed.name} exited with code {managed.process.returncode}; "
@@ -463,7 +479,9 @@ class StackSupervisor:
                 register=False,
             )
         except Exception:
+            self.ready_at = ""
             self.ready_detail = "camera input unavailable; reconnect failed"
+            self.camera_state_class = "unavailable"
             self._write_process_manifest()
             return False
 
@@ -473,7 +491,9 @@ class StackSupervisor:
             replacement.process.terminate()
             return False
         self.processes[index] = replacement
+        self.ready_at = ""
         self.ready_detail = "camera input reconnecting; awaiting fresh frame topics"
+        self.camera_state_class = "recovering"
         self._write_process_manifest()
         return True
 
@@ -502,6 +522,7 @@ class StackSupervisor:
         self.ready = True
         self.ready_at = datetime.now(timezone.utc).isoformat()
         self.ready_detail = "camera input recovered; fresh frame topics observed"
+        self.camera_state_class = "ready"
         self._restart_attempts.pop(publisher.name, None)
         self._write_process_manifest()
         print("Camera input recovered; fresh Camera Hub topics observed.")
@@ -518,6 +539,12 @@ class StackSupervisor:
     def _write_process_manifest(self) -> None:
         if self.process_manifest_path is None:
             return
+        if self.camera_state_class not in CAMERA_STATE_CLASSES:
+            raise RuntimeError("invalid camera state class")
+        if self.ready != (self.camera_state_class == "ready"):
+            raise RuntimeError("camera ready state does not match camera state class")
+        if self.ready != bool(self.ready_at):
+            raise RuntimeError("camera ready_at does not match camera ready state")
         processes = []
         for managed in self.processes:
             processes.append(
@@ -532,10 +559,11 @@ class StackSupervisor:
                 }
             )
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "module": "mediapipe-sword-sign",
             "service": "mediapipe_camera_hub_stack",
             "owner_pid": os.getpid(),
+            "camera_state_class": self.camera_state_class,
             "ready": self.ready,
             "ready_at": self.ready_at or None,
             "ready_detail": self.ready_detail,
