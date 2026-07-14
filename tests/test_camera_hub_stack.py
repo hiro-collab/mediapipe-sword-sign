@@ -251,6 +251,113 @@ class CameraHubStackTests(unittest.TestCase):
         supervisor._restart_process.assert_called_once_with(managed)
         supervisor.stop.assert_not_called()
 
+    def test_initial_camera_unavailable_keeps_supervisor_degraded(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.args = mock.Mock(
+            rtsp_url="rtsp://127.0.0.1:8554/cam0",
+            wait_seconds=1,
+        )
+        supervisor.ready = True
+        supervisor.ready_at = "prior-ready"
+        supervisor.ready_detail = "ready"
+        supervisor._write_process_manifest = mock.Mock()
+
+        with mock.patch.object(
+            stack,
+            "wait_for_rtsp",
+            side_effect=RuntimeError("camera unavailable"),
+        ):
+            available = supervisor._wait_for_initial_camera_input("ffprobe")
+
+        self.assertFalse(available)
+        self.assertFalse(supervisor.ready)
+        self.assertEqual(supervisor.ready_at, "")
+        self.assertEqual(
+            supervisor.ready_detail,
+            "camera input unavailable; reconnecting",
+        )
+        supervisor._write_process_manifest.assert_called_once()
+
+    def test_startup_check_allows_restartable_camera_publisher_to_be_down(self):
+        process = mock.Mock()
+        process.poll.return_value = 1
+        managed = stack.ManagedProcess(
+            name="ffmpeg-cam0",
+            process=process,
+            log_file=Path("publisher.log"),
+            started_at="2026-07-15T00:00:00+00:00",
+            critical=True,
+            restartable=True,
+        )
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.processes = [managed]
+
+        with mock.patch.object(stack.time, "sleep"):
+            supervisor._sleep_and_check(0.1)
+
+    def test_initial_degraded_hub_stays_unready_after_listener_opens(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.args = mock.Mock(
+            hub_host="127.0.0.1",
+            hub_port=8765,
+            hub_wait_seconds=2,
+        )
+        supervisor.ready = True
+        supervisor.ready_at = "prior-ready"
+        supervisor.ready_detail = "camera input unavailable; reconnecting"
+        supervisor._write_process_manifest = mock.Mock()
+
+        with (
+            mock.patch.object(stack, "wait_for_websocket") as wait_listener,
+            mock.patch.object(stack, "wait_for_camera_hub_topics") as wait_topics,
+        ):
+            supervisor._establish_initial_camera_hub_state(False)
+
+        self.assertFalse(supervisor.ready)
+        self.assertEqual(supervisor.ready_at, "")
+        self.assertEqual(
+            supervisor.ready_detail,
+            "camera input unavailable; reconnecting",
+        )
+        wait_listener.assert_called_once_with(
+            8765,
+            "127.0.0.1",
+            2,
+            service_name="Camera Hub degraded listener",
+        )
+        wait_topics.assert_not_called()
+        supervisor._write_process_manifest.assert_called_once()
+
+    def test_initial_ready_hub_requires_fresh_camera_and_gesture_topics(self):
+        supervisor = stack.StackSupervisor.__new__(stack.StackSupervisor)
+        supervisor.args = mock.Mock(
+            hub_host="127.0.0.1",
+            hub_port=8765,
+            hub_wait_seconds=2,
+        )
+        supervisor.ready = False
+        supervisor.ready_at = ""
+        supervisor.ready_detail = "starting"
+        supervisor._write_process_manifest = mock.Mock()
+
+        with (
+            mock.patch.object(
+                stack,
+                "wait_for_camera_hub_topics",
+                return_value=set(stack.REQUIRED_READY_TOPICS),
+            ) as wait_topics,
+            mock.patch.object(stack, "wait_for_websocket") as wait_listener,
+        ):
+            supervisor._establish_initial_camera_hub_state(True)
+
+        self.assertTrue(supervisor.ready)
+        self.assertTrue(supervisor.ready_at)
+        self.assertIn("/camera/status", supervisor.ready_detail)
+        self.assertIn("/vision/sword_sign/state", supervisor.ready_detail)
+        wait_topics.assert_called_once()
+        wait_listener.assert_not_called()
+        supervisor._write_process_manifest.assert_called_once()
+
     def test_restart_replaces_only_camera_publisher_and_marks_degraded(self):
         failed_process = mock.Mock()
         failed_process.returncode = 1

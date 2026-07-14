@@ -2,6 +2,7 @@ import argparse
 import math
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -299,6 +300,128 @@ class ServeCameraHubTests(unittest.TestCase):
         self.assertTrue(first.released)
         self.assertTrue(second.released)
         self.assertEqual(camera.actual_properties()["reconnect_attempts"], 1)
+
+    def test_latest_frame_camera_starts_degraded_and_reopens_initial_capture(self):
+        class FakeCapture:
+            def __init__(self, *, opened, reads=()):
+                self.opened = opened
+                self.reads = iter(reads)
+                self.released = False
+
+            def isOpened(self):
+                return self.opened and not self.released
+
+            def read(self):
+                try:
+                    return next(self.reads)
+                except StopIteration:
+                    return False, None
+
+            def get(self, _prop_id):
+                return 0.0
+
+            def set(self, _prop_id, _value):
+                return True
+
+            def release(self):
+                self.released = True
+
+        initial = FakeCapture(opened=False)
+        recovered = FakeCapture(opened=True, reads=[(True, "recovered-frame")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_after_failures = 1
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            camera.start()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if camera.snapshot(copy_frame=False).frame == "recovered-frame":
+                    break
+                time.sleep(0.005)
+            camera.stop()
+
+        self.assertEqual(
+            camera.snapshot(copy_frame=False).frame,
+            "recovered-frame",
+        )
+        self.assertTrue(initial.released)
+        self.assertTrue(recovered.released)
+        self.assertEqual(camera.actual_properties()["reconnect_attempts"], 1)
+
+    def test_latest_frame_camera_stop_releases_candidate_opened_during_reconnect(self):
+        candidate_opened = threading.Event()
+        allow_candidate_result = threading.Event()
+
+        class FakeCapture:
+            def __init__(self, *, block_on_open=False):
+                self.block_on_open = block_on_open
+                self.released = False
+
+            def isOpened(self):
+                if self.block_on_open:
+                    candidate_opened.set()
+                    allow_candidate_result.wait(timeout=1.0)
+                return True
+
+            def release(self):
+                self.released = True
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+        initial = FakeCapture()
+        candidate = FakeCapture(block_on_open=True)
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, candidate],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            result = []
+            worker = threading.Thread(
+                target=lambda: result.append(camera._reconnect_until_open())
+            )
+            worker.start()
+            self.assertTrue(candidate_opened.wait(timeout=1.0))
+            camera.stop()
+            allow_candidate_result.set()
+            worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertIs(camera.cap, initial)
+        self.assertTrue(initial.released)
+        self.assertTrue(candidate.released)
+
+    def test_latest_frame_camera_closed_replay_source_fails_closed(self):
+        capture = mock.Mock()
+        capture.isOpened.return_value = False
+        capture.get.return_value = 0.0
+        capture.set.return_value = True
+        capture.metadata = None
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            return_value=capture,
+        ):
+            camera = LatestFrameCamera(
+                "fixture.mp4",
+                camera_index=0,
+                interval=0.0,
+                backend="replay-video",
+                replay_loop=False,
+            )
+            with self.assertRaisesRegex(RuntimeError, "camera not available"):
+                camera.start()
+
+        self.assertIsNone(camera._thread)
 
     def test_non_looping_replay_eof_does_not_become_implicit_reconnect_loop(self):
         capture = mock.Mock()

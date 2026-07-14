@@ -164,8 +164,9 @@ class StackSupervisor:
             restartable=True,
         )
 
+        initial_camera_input_ready = True
         if not self.args.skip_rtsp_wait:
-            wait_for_rtsp(ffprobe, self.args.rtsp_url, self.args.wait_seconds)
+            initial_camera_input_ready = self._wait_for_initial_camera_input(ffprobe)
 
         hub_args = build_hub_args(
             uv=uv,
@@ -190,16 +191,7 @@ class StackSupervisor:
         )
         self._start("camera-hub", hub_args)
         self._sleep_and_check(1.0)
-        observed_topics = wait_for_camera_hub_topics(
-            self.args.hub_port,
-            connect_host(self.args.hub_host),
-            self.args.hub_wait_seconds,
-            service_name="Camera Hub topics",
-        )
-        self.ready = True
-        self.ready_at = datetime.now(timezone.utc).isoformat()
-        self.ready_detail = "received " + ", ".join(sorted(observed_topics))
-        self._write_process_manifest()
+        self._establish_initial_camera_hub_state(initial_camera_input_ready)
 
         if self.args.python_gui:
             self._start(
@@ -375,11 +367,52 @@ class StackSupervisor:
     def _sleep_and_check(self, seconds: float) -> None:
         time.sleep(seconds)
         for managed in self.processes:
-            if managed.critical and not managed.is_running():
+            if (
+                managed.critical
+                and not managed.restartable
+                and not managed.is_running()
+            ):
                 raise RuntimeError(
                     f"{managed.name} exited early with code {managed.process.returncode}. "
                     f"See log: {managed.log_file}"
                 )
+
+    def _wait_for_initial_camera_input(self, ffprobe: str) -> bool:
+        try:
+            wait_for_rtsp(ffprobe, self.args.rtsp_url, self.args.wait_seconds)
+        except RuntimeError:
+            self.ready = False
+            self.ready_at = ""
+            self.ready_detail = "camera input unavailable; reconnecting"
+            self._write_process_manifest()
+            print("Camera input unavailable at startup; continuing degraded.")
+            return False
+        return True
+
+    def _establish_initial_camera_hub_state(
+        self,
+        initial_camera_input_ready: bool,
+    ) -> None:
+        if initial_camera_input_ready:
+            observed_topics = wait_for_camera_hub_topics(
+                self.args.hub_port,
+                connect_host(self.args.hub_host),
+                self.args.hub_wait_seconds,
+                service_name="Camera Hub topics",
+            )
+            self.ready = True
+            self.ready_at = datetime.now(timezone.utc).isoformat()
+            self.ready_detail = "received " + ", ".join(sorted(observed_topics))
+        else:
+            wait_for_websocket(
+                self.args.hub_port,
+                connect_host(self.args.hub_host),
+                self.args.hub_wait_seconds,
+                service_name="Camera Hub degraded listener",
+            )
+            self.ready = False
+            self.ready_at = ""
+        self._write_process_manifest()
 
     def _monitor(self) -> int:
         while not self._stopping:

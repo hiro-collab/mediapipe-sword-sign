@@ -738,7 +738,7 @@ class LatestFrameCamera:
             return self._capture_opened
 
     def start(self) -> None:
-        if not self.cap.isOpened():
+        if not self.cap.isOpened() and not self._reconnect_enabled:
             source = redact_camera_source(str(self.source))
             raise RuntimeError(f"camera not available: {source}")
         self._stop_event.clear()
@@ -752,8 +752,11 @@ class LatestFrameCamera:
     def stop(self) -> None:
         self._stop_event.set()
         # Releasing first also unblocks an FFmpeg pipe read after a device loss.
+        with self._lock:
+            capture = self.cap
+            self._capture_opened = False
         with contextlib.suppress(Exception):
-            self.cap.release()
+            capture.release()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=3)
         self._thread = None
@@ -837,14 +840,17 @@ class LatestFrameCamera:
             try:
                 candidate = self._open_capture()
                 if candidate.isOpened():
-                    if self._stop_event.is_set():
-                        candidate.release()
-                        return False
+                    accepted = False
                     with self._lock:
-                        self.cap = candidate
-                        self._capture_opened = True
-                        self._frame_read_ok = False
-                    return True
+                        if not self._stop_event.is_set():
+                            self.cap = candidate
+                            self._capture_opened = True
+                            self._frame_read_ok = False
+                            accepted = True
+                    if accepted:
+                        return True
+                    candidate.release()
+                    return False
             except Exception:
                 pass
             if candidate is not None:
