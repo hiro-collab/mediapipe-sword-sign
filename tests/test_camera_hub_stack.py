@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -412,6 +412,7 @@ class CameraHubStackTests(unittest.TestCase):
             critical=True,
             restartable=True,
             register=False,
+            sensitive_log_values=(),
         )
 
     def test_recovery_requires_fresh_camera_and_gesture_topics(self):
@@ -919,6 +920,57 @@ class CameraHubStackTests(unittest.TestCase):
 
         self.assertNotIn("secret", value)
         self.assertIn("rtsp://<redacted>@example.test:8554/cam0", value)
+
+    def test_camera_selection_is_redacted_from_command_and_stream_logs(self):
+        private_selection = r"@device_pnp_\\?\usb#private-camera"
+        command_value = stack.quote_for_log(
+            f"video={private_selection}",
+            (private_selection,),
+        )
+        self.assertEqual(command_value, "video=<local-camera-selection>")
+        escaped_echo = stack.redact_text_for_log(
+            r"opening @device_pnp_\\?\usb#escaped-camera"
+        )
+        self.assertNotIn("@device_pnp_", escaped_echo)
+        self.assertIn("<local-camera-selection>", escaped_echo)
+
+        class FakeProcess:
+            stdout = iter(
+                [
+                    f"opening video={private_selection}\n",
+                    "frame ready\n",
+                ]
+            )
+
+            @staticmethod
+            def wait():
+                return 0
+
+            @staticmethod
+            def poll():
+                return 0
+
+        managed = stack.ManagedProcess(
+            name="ffmpeg-cam0",
+            process=FakeProcess(),
+            log_file=Path("ignored.log"),
+            started_at="now",
+            sensitive_log_values=(private_selection,),
+        )
+        class NonClosingStringIO(io.StringIO):
+            def close(self):
+                self.stream_close_requested = True
+
+        log_output = NonClosingStringIO()
+        console_output = io.StringIO()
+        with redirect_stdout(console_output):
+            stack.stream_output(managed, log_output)
+
+        combined = log_output.getvalue() + console_output.getvalue()
+        self.assertNotIn(private_selection, combined)
+        self.assertNotIn("@device_pnp_", combined)
+        self.assertIn("<local-camera-selection>", combined)
+        self.assertIn("frame ready", combined)
 
     def test_parser_rejects_invalid_runtime_numbers(self):
         invalid_args = [

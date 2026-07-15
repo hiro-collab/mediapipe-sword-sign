@@ -79,6 +79,10 @@ EXTERNAL_PROCESS_DENYLIST = {
 URL_CREDENTIAL_RE = re.compile(
     r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/\s\"'@]+@)"
 )
+DSHOW_ALTERNATIVE_NAME_RE = re.compile(
+    r"@device_(?:pnp|cm)_[^\s\"'<>]+",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -91,6 +95,7 @@ class ManagedProcess:
     restartable: bool = False
     command: tuple[str, ...] = ()
     stdin: int | None = subprocess.DEVNULL
+    sensitive_log_values: tuple[str, ...] = ()
 
     def is_running(self) -> bool:
         return self.process.poll() is None
@@ -166,6 +171,7 @@ class StackSupervisor:
             ),
             stdin=subprocess.PIPE,
             restartable=True,
+            sensitive_log_values=(self.args.camera_name,),
         )
 
         initial_camera_input_ready = True
@@ -323,13 +329,16 @@ class StackSupervisor:
         critical: bool = True,
         restartable: bool = False,
         register: bool = True,
+        sensitive_log_values: tuple[str, ...] = (),
     ) -> ManagedProcess:
         log_file = self.log_dir / f"{name}.log"
         log_handle = log_file.open("a", encoding="utf-8", errors="replace")
         log_handle.write(f"\n\n--- start {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         log_handle.write(
             "command: "
-            + " ".join(quote_for_log(part) for part in command)
+            + " ".join(
+                quote_for_log(part, sensitive_log_values) for part in command
+            )
             + "\n"
         )
         log_handle.flush()
@@ -357,6 +366,7 @@ class StackSupervisor:
             restartable=restartable,
             command=tuple(command),
             stdin=stdin,
+            sensitive_log_values=sensitive_log_values,
         )
         if register:
             self.processes.append(managed)
@@ -477,6 +487,7 @@ class StackSupervisor:
                 critical=managed.critical,
                 restartable=True,
                 register=False,
+                sensitive_log_values=managed.sensitive_log_values,
             )
         except Exception:
             self.ready_at = ""
@@ -1637,10 +1648,13 @@ def stream_output(managed: ManagedProcess, log_handle) -> None:
     try:
         assert managed.process.stdout is not None
         for line in managed.process.stdout:
-            text = line.rstrip()
+            text = redact_text_for_log(
+                line.rstrip(),
+                managed.sensitive_log_values,
+            )
             if text:
                 print(f"[{managed.name}] {text}", flush=True)
-            log_handle.write(line)
+            log_handle.write(text + "\n")
             log_handle.flush()
     finally:
         log_handle.write(f"--- exit code {managed.process.wait()} ---\n")
@@ -1719,15 +1733,29 @@ def open_browser_viewer(url: str) -> None:
     subprocess.Popen([opener, url])
 
 
-def quote_for_log(value: str) -> str:
-    value = redact_text_for_log(value)
+def quote_for_log(
+    value: str,
+    sensitive_values: tuple[str, ...] = (),
+) -> str:
+    value = redact_text_for_log(value, sensitive_values)
     if any(char.isspace() for char in value):
         return '"' + value.replace('"', '\\"') + '"'
     return value
 
 
-def redact_text_for_log(value: object) -> str:
-    return URL_CREDENTIAL_RE.sub(r"\g<scheme><redacted>@", str(value))
+def redact_text_for_log(
+    value: object,
+    sensitive_values: tuple[str, ...] = (),
+) -> str:
+    text = URL_CREDENTIAL_RE.sub(r"\g<scheme><redacted>@", str(value))
+    text = DSHOW_ALTERNATIVE_NAME_RE.sub("<local-camera-selection>", text)
+    for sensitive_value in sorted(
+        {item for item in sensitive_values if item},
+        key=len,
+        reverse=True,
+    ):
+        text = text.replace(sensitive_value, "<local-camera-selection>")
+    return text
 
 
 def main(argv: list[str] | None = None) -> int:
