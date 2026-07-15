@@ -684,11 +684,13 @@ class LatestFrameCamera:
             "fps": fps,
             "fourcc": fourcc,
         }
-        self.cap = self._open_capture()
-        self._fps_tracker = FpsTracker()
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._pending_capture = None
+        self._lifecycle_state = "created"
+        self.cap = self._open_capture()
+        self._fps_tracker = FpsTracker()
         self._frame = None
         self._frame_number = 0
         self._stamp = time.time()
@@ -738,28 +740,56 @@ class LatestFrameCamera:
             return self._capture_opened
 
     def start(self) -> None:
-        if not self.cap.isOpened() and not self._reconnect_enabled:
+        with self._lock:
+            if self._lifecycle_state != "created":
+                raise RuntimeError("camera lifecycle is not startable")
+            capture = self.cap
+        if (
+            (capture is None or not capture.isOpened())
+            and not self._reconnect_enabled
+        ):
             source = redact_camera_source(str(self.source))
             raise RuntimeError(f"camera not available: {source}")
-        self._stop_event.clear()
-        self._thread = threading.Thread(
+        thread = threading.Thread(
             target=self._run,
             name="camera-hub-capture",
             daemon=True,
         )
-        self._thread.start()
+        with self._lock:
+            if (
+                self._lifecycle_state != "created"
+                or self._stop_event.is_set()
+                or self.cap is not capture
+            ):
+                raise RuntimeError("camera lifecycle stopped before start")
+            self._lifecycle_state = "running"
+            self._thread = thread
+            thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         # Releasing first also unblocks an FFmpeg pipe read after a device loss.
         with self._lock:
+            self._lifecycle_state = "stopping"
             capture = self.cap
+            self.cap = None
+            pending_capture = self._pending_capture
+            self._pending_capture = None
             self._capture_opened = False
-        with contextlib.suppress(Exception):
-            capture.release()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=3)
-        self._thread = None
+            thread = self._thread
+        owned_captures = []
+        if pending_capture is not None and pending_capture is not capture:
+            owned_captures.append(pending_capture)
+        if capture is not None:
+            owned_captures.append(capture)
+        for owned_capture in owned_captures:
+            with contextlib.suppress(Exception):
+                owned_capture.release()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3)
+        with self._lock:
+            self._thread = None
+            self._lifecycle_state = "stopped"
 
     def snapshot(self, *, copy_frame: bool = True) -> CameraFrameSnapshot:
         with self._lock:
@@ -780,14 +810,24 @@ class LatestFrameCamera:
         consecutive_failures = 0
         while not self._stop_event.is_set():
             read_started = time.monotonic()
+            with self._lock:
+                capture = self.cap
             try:
-                success, frame = self.cap.read()
+                success, frame = (
+                    capture.read() if capture is not None else (False, None)
+                )
             except Exception:
                 success, frame = False, None
+            success = bool(success and frame is not None)
             read_latency_ms = (time.monotonic() - read_started) * 1000.0
             stamp = time.time()
             now = time.monotonic()
             with self._lock:
+                late_or_replaced_read = (
+                    self._stop_event.is_set() or self.cap is not capture
+                )
+                if late_or_replaced_read:
+                    continue
                 self._frame_read_ok = bool(success)
                 self._read_latency_ms = read_latency_ms
                 if success:
@@ -821,14 +861,54 @@ class LatestFrameCamera:
             else:
                 self._stop_event.wait(0.05)
 
-    def _open_capture(self):
+    def _open_capture(self, *, register_pending: bool = False):
         cap = open_video_capture(self.source, **self._capture_options)
-        self._configure_capture(cap, **self._capture_configuration)
+        if register_pending and not self._claim_pending_capture(cap):
+            with contextlib.suppress(Exception):
+                cap.release()
+            return None
+        try:
+            self._configure_capture(cap, **self._capture_configuration)
+        except Exception:
+            if register_pending:
+                self._release_pending_capture(cap)
+            else:
+                with contextlib.suppress(Exception):
+                    cap.release()
+            raise
+        if register_pending:
+            with self._lock:
+                if self._pending_capture is not cap or self._stop_event.is_set():
+                    return None
         return cap
 
+    def _claim_pending_capture(self, candidate) -> bool:
+        with self._lock:
+            if self._stop_event.is_set() or self._pending_capture is not None:
+                return False
+            self._pending_capture = candidate
+            return True
+
+    def _release_pending_capture(self, candidate) -> bool:
+        with self._lock:
+            should_release = self._pending_capture is candidate
+            if should_release:
+                self._pending_capture = None
+        if should_release:
+            with contextlib.suppress(Exception):
+                candidate.release()
+        return should_release
+
     def _reconnect_until_open(self) -> bool:
-        with contextlib.suppress(Exception):
-            self.cap.release()
+        with self._lock:
+            previous_capture = self.cap
+            self.cap = None
+            self._capture_opened = False
+            self._frame_read_ok = False
+            self._frame = None
+        if previous_capture is not None:
+            with contextlib.suppress(Exception):
+                previous_capture.release()
 
         delay = self._reconnect_initial_delay
         while not self._stop_event.is_set():
@@ -838,24 +918,53 @@ class LatestFrameCamera:
                 self._reconnect_attempts += 1
             candidate = None
             try:
-                candidate = self._open_capture()
+                candidate = self._open_capture(register_pending=True)
+                if candidate is None:
+                    if self._stop_event.is_set():
+                        return False
+                    delay = min(max(delay * 2.0, 0.05), self._reconnect_max_delay)
+                    continue
                 if candidate.isOpened():
+                    if self._stop_event.is_set():
+                        self._release_pending_capture(candidate)
+                        return False
+                    read_started = time.monotonic()
+                    try:
+                        success, frame = candidate.read()
+                    except Exception:
+                        success, frame = False, None
+                    read_latency_ms = (time.monotonic() - read_started) * 1000.0
+                    if not success or frame is None:
+                        self._release_pending_capture(candidate)
+                        candidate = None
+                        delay = min(max(delay * 2.0, 0.05), self._reconnect_max_delay)
+                        continue
+                    stamp = time.time()
+                    now = time.monotonic()
                     accepted = False
                     with self._lock:
-                        if not self._stop_event.is_set():
+                        if (
+                            not self._stop_event.is_set()
+                            and self._pending_capture is candidate
+                        ):
                             self.cap = candidate
+                            self._pending_capture = None
                             self._capture_opened = True
-                            self._frame_read_ok = False
+                            self._frame_read_ok = True
+                            self._read_latency_ms = read_latency_ms
+                            self._stamp = stamp
+                            self._frame_number += 1
+                            self._frame = frame
+                            self._fps = self._fps_tracker.update(now)
                             accepted = True
                     if accepted:
                         return True
-                    candidate.release()
+                    self._release_pending_capture(candidate)
                     return False
             except Exception:
                 pass
             if candidate is not None:
-                with contextlib.suppress(Exception):
-                    candidate.release()
+                self._release_pending_capture(candidate)
             delay = min(max(delay * 2.0, 0.05), self._reconnect_max_delay)
         return False
 

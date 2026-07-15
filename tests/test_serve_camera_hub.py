@@ -327,7 +327,10 @@ class ServeCameraHubTests(unittest.TestCase):
                 self.released = True
 
         initial = FakeCapture(opened=False)
-        recovered = FakeCapture(opened=True, reads=[(True, "recovered-frame")])
+        recovered = FakeCapture(
+            opened=True,
+            reads=[(True, "recovered-frame")] * 5,
+        )
         with mock.patch(
             "apps.serve_camera_hub.open_video_capture",
             side_effect=[initial, recovered],
@@ -352,6 +355,493 @@ class ServeCameraHubTests(unittest.TestCase):
         self.assertTrue(recovered.released)
         self.assertEqual(camera.actual_properties()["reconnect_attempts"], 1)
 
+    def test_latest_frame_camera_active_success_without_frame_reconnects(self):
+        class FakeCapture:
+            def __init__(self, reads):
+                self.reads = iter(reads)
+                self.last = (False, None)
+                self.release_calls = 0
+
+            def isOpened(self):
+                return self.release_calls == 0
+
+            def read(self):
+                try:
+                    self.last = next(self.reads)
+                except StopIteration:
+                    pass
+                return self.last
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+
+        initial = FakeCapture([(True, None)])
+        recovered = FakeCapture([(True, "valid-frame")] * 3)
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_after_failures = 1
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            camera.start()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if camera.snapshot(copy_frame=False).frame == "valid-frame":
+                    break
+                time.sleep(0.005)
+            camera.stop()
+
+        self.assertEqual(camera.snapshot(copy_frame=False).frame, "valid-frame")
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(recovered.release_calls, 1)
+
+    def test_latest_frame_camera_reconnect_requires_a_real_first_frame(self):
+        class FakeCapture:
+            def __init__(self, *, opened=True, reads=()):
+                self.opened = opened
+                self.reads = iter(reads)
+                self.released = False
+
+            def isOpened(self):
+                return self.opened and not self.released
+
+            def read(self):
+                try:
+                    return next(self.reads)
+                except StopIteration:
+                    return False, None
+
+            def get(self, _prop_id):
+                return 0.0
+
+            def set(self, _prop_id, _value):
+                return True
+
+            def release(self):
+                self.released = True
+
+        initial = FakeCapture()
+        opened_without_frame = FakeCapture(reads=[(False, None)])
+        recovered = FakeCapture(reads=[(True, "first-recovered-frame")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, opened_without_frame, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            self.assertTrue(camera._reconnect_until_open())
+
+        snapshot = camera.snapshot(copy_frame=False)
+        self.assertEqual(snapshot.frame, "first-recovered-frame")
+        self.assertTrue(snapshot.frame_read_ok)
+        self.assertTrue(opened_without_frame.released)
+        self.assertIs(camera.cap, recovered)
+        self.assertEqual(camera.actual_properties()["reconnect_attempts"], 2)
+        camera.stop()
+        self.assertTrue(recovered.released)
+
+    def test_latest_frame_camera_reconnect_rejects_success_without_a_frame(self):
+        class FakeCapture:
+            def __init__(self, reads=()):
+                self.reads = iter(reads)
+                self.released = False
+
+            def isOpened(self):
+                return not self.released
+
+            def read(self):
+                return next(self.reads, (False, None))
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.released = True
+
+        initial = FakeCapture()
+        missing_frame = FakeCapture(reads=[(True, None)])
+        recovered = FakeCapture(reads=[(True, "valid-frame")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, missing_frame, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            self.assertTrue(camera._reconnect_until_open())
+
+        snapshot = camera.snapshot(copy_frame=False)
+        self.assertEqual(snapshot.frame, "valid-frame")
+        self.assertTrue(snapshot.frame_read_ok)
+        self.assertTrue(missing_frame.released)
+        self.assertIs(camera.cap, recovered)
+        camera.stop()
+
+    def test_latest_frame_camera_reconnect_releases_configuration_failure(self):
+        class FakeCapture:
+            def __init__(self, reads=()):
+                self.reads = iter(reads)
+                self.released = False
+
+            def isOpened(self):
+                return not self.released
+
+            def read(self):
+                return next(self.reads, (False, None))
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.released = True
+
+        initial = FakeCapture()
+        configuration_failure = FakeCapture()
+        recovered = FakeCapture(reads=[(True, "valid-frame")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, configuration_failure, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            with mock.patch.object(
+                camera,
+                "_configure_capture",
+                side_effect=[RuntimeError("configuration failed"), None],
+            ):
+                self.assertTrue(camera._reconnect_until_open())
+
+        self.assertTrue(configuration_failure.released)
+        self.assertIs(camera.cap, recovered)
+        camera.stop()
+
+    def test_latest_frame_camera_initial_configuration_failure_releases_capture(self):
+        capture = mock.Mock()
+        capture.set.side_effect = RuntimeError("configuration failed")
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            return_value=capture,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "configuration failed"):
+                LatestFrameCamera(
+                    0,
+                    camera_index=0,
+                    interval=0.001,
+                    width=640,
+                )
+
+        capture.release.assert_called_once_with()
+
+    def test_latest_frame_camera_reconnect_releases_closed_and_raising_candidates(self):
+        class FakeCapture:
+            def __init__(self, *, opened=True, open_error=None, reads=()):
+                self.opened = opened
+                self.open_error = open_error
+                self.reads = iter(reads)
+                self.release_calls = 0
+
+            def isOpened(self):
+                if self.open_error is not None:
+                    raise self.open_error
+                return self.opened and self.release_calls == 0
+
+            def read(self):
+                return next(self.reads, (False, None))
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+
+        initial = FakeCapture()
+        closed = FakeCapture(opened=False)
+        raising = FakeCapture(open_error=RuntimeError("open state unavailable"))
+        recovered = FakeCapture(reads=[(True, "valid-frame")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, closed, raising, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            self.assertTrue(camera._reconnect_until_open())
+
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(closed.release_calls, 1)
+        self.assertEqual(raising.release_calls, 1)
+        self.assertIs(camera.cap, recovered)
+        camera.stop()
+        self.assertEqual(recovered.release_calls, 1)
+
+    def test_latest_frame_camera_stop_before_pending_claim_releases_returned_candidate(self):
+        open_started = threading.Event()
+        allow_open_return = threading.Event()
+
+        class FakeCapture:
+            def __init__(self):
+                self.release_calls = 0
+
+            def isOpened(self):
+                return self.release_calls == 0
+
+            def read(self):
+                return False, None
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+
+        initial = FakeCapture()
+        candidate = FakeCapture()
+        open_count = 0
+
+        def open_capture(*_args, **_kwargs):
+            nonlocal open_count
+            open_count += 1
+            if open_count == 1:
+                return initial
+            open_started.set()
+            allow_open_return.wait(timeout=1.0)
+            return candidate
+
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=open_capture,
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            result = []
+            worker = threading.Thread(
+                target=lambda: result.append(camera._reconnect_until_open())
+            )
+            worker.start()
+            self.assertTrue(open_started.wait(timeout=1.0))
+            camera.stop()
+            allow_open_return.set()
+            worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertIsNone(camera.cap)
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(candidate.release_calls, 1)
+
+    def test_latest_frame_camera_stop_during_configuration_releases_pending_once(self):
+        configure_started = threading.Event()
+        allow_configuration = threading.Event()
+
+        class FakeCapture:
+            def __init__(self):
+                self.release_calls = 0
+
+            def isOpened(self):
+                return self.release_calls == 0
+
+            def read(self):
+                return False, None
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+
+        initial = FakeCapture()
+        candidate = FakeCapture()
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, candidate],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+
+            def blocked_configuration(*_args, **_kwargs):
+                configure_started.set()
+                allow_configuration.wait(timeout=1.0)
+
+            result = []
+            with mock.patch.object(
+                camera,
+                "_configure_capture",
+                side_effect=blocked_configuration,
+            ):
+                worker = threading.Thread(
+                    target=lambda: result.append(camera._reconnect_until_open())
+                )
+                worker.start()
+                self.assertTrue(configure_started.wait(timeout=1.0))
+                camera.stop()
+                allow_configuration.set()
+                worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertIsNone(camera.cap)
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(candidate.release_calls, 1)
+
+    def test_latest_frame_camera_promotes_pending_and_stop_is_idempotent(self):
+        class FakeCapture:
+            def __init__(self, reads=()):
+                self.reads = iter(reads)
+                self.release_calls = 0
+
+            def isOpened(self):
+                return self.release_calls == 0
+
+            def read(self):
+                return next(self.reads, (False, None))
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+
+        initial = FakeCapture()
+        recovered = FakeCapture(reads=[(True, "valid-frame")])
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, recovered],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            self.assertTrue(camera._reconnect_until_open())
+            self.assertIs(camera.cap, recovered)
+            self.assertIsNone(camera._pending_capture)
+            camera.stop()
+            camera.stop()
+            with self.assertRaisesRegex(RuntimeError, "not startable"):
+                camera.start()
+
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(recovered.release_calls, 1)
+
+    def test_latest_frame_camera_stop_releases_blocked_first_read(self):
+        first_read_started = threading.Event()
+        first_read_unblocked = threading.Event()
+
+        class FakeCapture:
+            def __init__(self, *, block_read=False):
+                self.block_read = block_read
+                self.release_calls = 0
+
+            def isOpened(self):
+                return self.release_calls == 0
+
+            def read(self):
+                if self.block_read:
+                    first_read_started.set()
+                    first_read_unblocked.wait(timeout=1.0)
+                return False, None
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+                if self.block_read:
+                    first_read_unblocked.set()
+
+        initial = FakeCapture()
+        candidate = FakeCapture(block_read=True)
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            side_effect=[initial, candidate],
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera._reconnect_initial_delay = 0.0
+            camera._reconnect_max_delay = 0.0
+            result = []
+            worker = threading.Thread(
+                target=lambda: result.append(camera._reconnect_until_open())
+            )
+            worker.start()
+            self.assertTrue(first_read_started.wait(timeout=1.0))
+            camera.stop()
+            worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(candidate.release_calls, 1)
+
+    def test_latest_frame_camera_stop_discards_late_active_read(self):
+        read_started = threading.Event()
+        read_unblocked = threading.Event()
+
+        class FakeCapture:
+            def __init__(self):
+                self.release_calls = 0
+
+            def isOpened(self):
+                return self.release_calls == 0
+
+            def read(self):
+                read_started.set()
+                read_unblocked.wait(timeout=1.0)
+                return True, "late-frame"
+
+            def get(self, _property):
+                return 0.0
+
+            def set(self, _property, _value):
+                return True
+
+            def release(self):
+                self.release_calls += 1
+                read_unblocked.set()
+
+        capture = FakeCapture()
+        with mock.patch(
+            "apps.serve_camera_hub.open_video_capture",
+            return_value=capture,
+        ):
+            camera = LatestFrameCamera(0, camera_index=0, interval=0.001)
+            camera.start()
+            self.assertTrue(read_started.wait(timeout=1.0))
+            camera.stop()
+
+        snapshot = camera.snapshot(copy_frame=False)
+        self.assertFalse(camera.is_opened())
+        self.assertFalse(snapshot.frame_read_ok)
+        self.assertIsNone(snapshot.frame)
+        self.assertEqual(capture.release_calls, 1)
+
     def test_latest_frame_camera_stop_releases_candidate_opened_during_reconnect(self):
         candidate_opened = threading.Event()
         allow_candidate_result = threading.Event()
@@ -359,7 +849,7 @@ class ServeCameraHubTests(unittest.TestCase):
         class FakeCapture:
             def __init__(self, *, block_on_open=False):
                 self.block_on_open = block_on_open
-                self.released = False
+                self.release_calls = 0
 
             def isOpened(self):
                 if self.block_on_open:
@@ -368,7 +858,7 @@ class ServeCameraHubTests(unittest.TestCase):
                 return True
 
             def release(self):
-                self.released = True
+                self.release_calls += 1
 
             def get(self, _property):
                 return 0.0
@@ -397,9 +887,9 @@ class ServeCameraHubTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(result, [False])
-        self.assertIs(camera.cap, initial)
-        self.assertTrue(initial.released)
-        self.assertTrue(candidate.released)
+        self.assertIsNone(camera.cap)
+        self.assertEqual(initial.release_calls, 1)
+        self.assertEqual(candidate.release_calls, 1)
 
     def test_latest_frame_camera_closed_replay_source_fails_closed(self):
         capture = mock.Mock()
