@@ -145,7 +145,7 @@ print(state.to_json())
 `http://127.0.0.1:8770/browser_camera_hub_viewer.html?mediaUrl=...&wsUrl=...`
 を開きます。`file://` で HTML を直接開く導線は単体デバッグ用です。
 
-`publish_udp.py`、`serve_websocket.py`、Python JPEG topic、`ffmpeg-pipe` RTSP compatibility diagnostic は通常導線ではありません。
+`publish_udp.py`、Python JPEG topic、`ffmpeg-pipe` RTSP compatibility diagnostic は通常導線ではありません。
 互換・検証・切り分け用途は [Retired And Compatibility Paths](docs/retired-paths.md) にまとめています。
 
 ### Local video training-row extraction

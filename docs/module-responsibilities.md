@@ -56,4 +56,4 @@ explicit ownership over convenience cleanup.
 - `CHANGELOG.md` is a dated change summary, not a runtime specification.
 - `docs/archive/` contains historical source text kept for traceability.
 - `examples/sword_push_to_talk_sample.py` is a reference sample, not a required integration.
-- `apps/publish_udp.py` and `apps/serve_websocket.py` are compatibility paths; see [Retired And Compatibility Paths](retired-paths.md).
+- `apps/publish_udp.py` is a compatibility path; see [Retired And Compatibility Paths](retired-paths.md).

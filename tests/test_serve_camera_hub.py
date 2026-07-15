@@ -45,6 +45,19 @@ from apps.serve_camera_hub import (
 
 
 class ServeCameraHubTests(unittest.TestCase):
+    def test_retired_direct_websocket_entrypoint_is_absent(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / "apps" / "serve_websocket.py").exists())
+        for relative_path in (
+            "README.md",
+            "docs/retired-paths.md",
+            "docs/module-responsibilities.md",
+        ):
+            self.assertNotIn(
+                "serve_websocket.py",
+                (root / relative_path).read_text(encoding="utf-8"),
+            )
+
     def test_parse_port_and_threshold(self):
         self.assertEqual(parse_port("8765"), 8765)
         self.assertEqual(parse_threshold("0.6"), 0.6)

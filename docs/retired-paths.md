@@ -20,13 +20,6 @@ Status: compatibility-only.
 
 Use it only for compatibility with UDP receivers or low-level diagnostics.
 
-## `apps/serve_websocket.py`
-
-This script broadcasts gesture JSON without the Camera Hub topic envelope split.
-Status: compatibility-only.
-It is useful for older clients and unit tests around the legacy WebSocket adapter.
-Browser and Home Control integrations should use `apps/serve_camera_hub.py`.
-
 ## Python JPEG Topic
 
 `/camera/color/image_raw/compressed` is disabled in the MediaMTX route with `--publish-jpeg-every 0`.
